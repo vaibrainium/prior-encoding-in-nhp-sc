@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  # Add as many notebooks as GPUs
+  notebook:
+    build: .
+    env_file: .env
+    ports:
+      - "${JUPYTER_PORT}:8888"
+    environment:
+      - "JUPYTER_PASSWORD=${JUPYTER_PASSWORD}"
+    volumes:
+      - ./:/src/
+      - D:/DATA:/mnt/data
+
+    # command:     # Already implemented in WalkerLab image by running jupyter in the background
+    command: sleep infinity; nvidia-smi
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
