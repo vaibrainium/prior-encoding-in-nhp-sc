@@ -29,9 +29,10 @@ wheel
 
 
 # Project specific requirements
-pyddm
-# hssm
 blackjax
 ipywidgets
 # cupy
 KDEpy
+kilosort
+phy
+spikeinterface
