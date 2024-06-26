@@ -11,6 +11,7 @@ services:
     volumes:
       - ./:/src/
       - D:/DATA:/mnt/data
+      - "Z:/BassoLabShare/Monkey Studies:/mnt/nhp_studies"
 
     # command:     # Already implemented in WalkerLab image by running jupyter in the background
     command: sleep infinity; nvidia-smi
