@@ -9,6 +9,7 @@ __pycache__/
 .Python
 venv/
 phy2/
+phy2-linux/*
 build/
 develop-eggs/
 dist/
