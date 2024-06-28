@@ -1,9 +1,0 @@
-# data:
-#   chemo_path: "/mnt/data/mouse-WFV-chemo-inhibition"
-# behavior:
-#   max_rt: 10
-#   min_rt: 0.05
-
-# chemogenetics:
-#   hM4Di:
-#     min_dose: 0.19
