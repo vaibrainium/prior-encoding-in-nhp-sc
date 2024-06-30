@@ -8,12 +8,9 @@
 from pathlib import Path
 from omegaconf import OmegaConf
 
-# Define the path to the config directory
-config_dir = Path(__file__).parent
-
-# Load the YAML configuration file
+# Load the YAML configuration file in config directory
 def load_config(filename):
-    return OmegaConf.load(config_dir / filename)
+    return OmegaConf.load(Path(__file__).parent / filename)
 
 # Example of accessing a specific configuration file
 dir_config = load_config('dir-config.yaml')
