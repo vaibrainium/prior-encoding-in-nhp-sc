@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   # Add as many notebooks as GPUs
   notebook:
@@ -10,7 +9,7 @@ services:
       - "JUPYTER_PASSWORD=${JUPYTER_PASSWORD}"
     volumes:
       - ./:/src/
-      - D:/DATA:/mnt/data
+      - "${DATAPATH}:/mnt/prior_data"
 
     # command:     # Already implemented in WalkerLab image by running jupyter in the background
     command: sleep infinity; nvidia-smi
@@ -20,10 +19,12 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
-# volumes:
-#   prior_data:
-#     driver: local
-#     driver_opts:
-#       type: cifs
-#       o: username=${USER},password=${PASS},uid=1000,gid=1000,vers=3.0
-#       device: //tower.wanprc.org/basso/BassoLabShare
+
+# Mounting the CIFS volume outside Docker
+volumes:
+  prior_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: "${DATAPATH}"
