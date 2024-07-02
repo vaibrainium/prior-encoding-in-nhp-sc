@@ -9,7 +9,7 @@ services:
       - "JUPYTER_PASSWORD=${JUPYTER_PASSWORD}"
     volumes:
       - ./:/src/
-      - "${DATAPATH}:/mnt/prior_data"
+      - "${DATAPATH}:/mnt/prior-data"
 
     # command:     # Already implemented in WalkerLab image by running jupyter in the background
     command: sleep infinity; nvidia-smi
