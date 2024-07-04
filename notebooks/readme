@@ -1,0 +1,8 @@
+Notebook organization
+naming structure: 0.00-xxx-yyy-zzz.ipynb where first number is for modules, first decimal is for major method change and second number is for minor method change
+
+modules:
+0: preprocessing
+1: behavioral analysis
+2: ephys analysis
+3: modeling
