@@ -5,4 +5,5 @@ modules:
 0: preprocessing
 1: behavioral analysis
 2: ephys analysis
-3: modeling
+3: modeling (behavioral and neural)
+
