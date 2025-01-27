@@ -6,7 +6,7 @@ from joblib import Parallel, delayed
 
 
 def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initializations=20,
-               fitting_method='em', n_iters=200, tolerance=10**-4, n_jobs=-1):
+                fitting_method='em', n_iters=200, tolerance=10**-4, n_jobs=-1):
     """
     Optimized version of global GLM-HMM fitting with parallelization over initializations.
     """
