@@ -169,7 +169,7 @@ def get_psychometric_data(data, positive_direction='right'):
             y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 1) / np.sum(data['signed_coherence'] == coh))
         elif positive_direction == 'left':
             x_data = np.append(x_data, -coh)
-            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == -1) / np.sum(data['signed_coherence'] == coh))
+            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 0) / np.sum(data['signed_coherence'] == coh))
     # sorting
     x_data, y_data = zip(*sorted(zip(x_data, y_data)))
     
