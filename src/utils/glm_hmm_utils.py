@@ -31,8 +31,7 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
             observations="input_driven_obs",
             observation_kwargs=dict(C=len(np.unique(observations[0]))),
             transitions="standard"
-        ) 
-        
+        )
         # Initialize weights and transition matrix
         glm_hmm.observations.params = glm_weights + np.random.normal(0, 0.2, (n_states, 1, inputs[0].shape[1]))
         transition_matrix = 0.95 * np.eye(n_states) + np.random.multivariate_normal(
@@ -42,7 +41,7 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
         glm_hmm.transitions.params = [transition_matrix]
 
         fit_ll = glm_hmm.fit(observations, inputs=inputs, masks=masks, method=fitting_method,
-                             num_iters=n_iters, initialize=False, tolerance=tolerance)
+                            num_iters=n_iters, initialize=False, tolerance=tolerance)
         return glm_hmm, fit_ll
 
     models_glm_hmm = {}

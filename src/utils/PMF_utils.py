@@ -158,3 +158,48 @@ class PsychometricFunction(BaseEstimator, RegressorMixin):
             fig.show()
 
         return fig
+
+
+def get_psychometric_data(data, positive_direction='right'):
+    x_data = np.asarray([])
+    y_data = np.asarray([])
+    for _, coh in enumerate(np.unique(data['signed_coherence'])):
+        if positive_direction == 'right':
+            x_data = np.append(x_data, coh)
+            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 1) / np.sum(data['signed_coherence'] == coh))
+        elif positive_direction == 'left':
+            x_data = np.append(x_data, -coh)
+            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 0) / np.sum(data['signed_coherence'] == coh))
+    # sorting
+    x_data, y_data = zip(*sorted(zip(x_data, y_data)))
+    
+    # fit psychometric function
+    x_model = np.linspace(-100, 100, 100)
+    model = fit_psychometric_function(x_data, y_data)
+    y_model = model.predict(x_model)
+    return np.asarray(x_data), np.asarray(y_data), model, np.asarray(x_model), np.asarray(y_model)
+
+
+def fit_psychometric_function(x_data, y_data, **model_kwargs):
+    defaults = {"model": "logit_4", "var_lims": (1e-5, 10), "lapse_rate_lims": (1e-5, 0.2), "guess_rate_lims": (1e-5, 0.2)}
+    for k, v in defaults.items():
+        val = model_kwargs.get(k, v)
+        model_kwargs[k] = val
+    model = PsychometricFunction(**model_kwargs).fit(x_data, y_data)
+    return model
+
+
+def get_chronometric_data(data, positive_direction='right'):
+    coherences = np.asarray([])
+    chrono = np.asarray([])
+    for _, coh in enumerate(np.unique(data['signed_coherence'])):
+        if positive_direction == 'right':
+            coherences = np.append(coherences, coh)
+            chrono = np.append(chrono, np.mean(data['response_time'][(data['signed_coherence'] == coh) & (data['outcome'] == 1)]))
+        elif positive_direction == 'letf':
+            coherences = np.append(coherences, -coh)
+            chrono = np.append(chrono, np.mean(data['response_time'][(data['signed_coherence'] == coh) & (data['outcome'] == 1)]))
+            
+    # sort coherences and chrono by coherence
+    coherences, chrono = zip(*sorted(zip(coherences, chrono)))
+    return coherences, chrono
