@@ -82,7 +82,7 @@ class Observations(object):
             for data, input, mask, tag, (expected_states, _, _) \
                 in zip(datas, inputs, masks, tags, expectations):
                 lls = self.log_likelihoods(data, input, mask, tag)
-                # Include only entries for which mask == 1
+                 # Include only entries for which mask == 1
                 temp = expected_states * lls
                 mask_cpy = np.transpose(
                     np.tile(mask[:, 0], (temp.shape[1], 1)))
@@ -835,12 +835,21 @@ class InputDrivenObservations(Observations):
         for k in range(self.K):
             def _objective_k(params):
                 return _objective(params, k)
+
             def _gradient_k(params):
                 return _gradient(params, k)
+
             def _hess_k(params):
                 return _hess(params, k)
-            sol = minimize(_objective_k, self.params[k].reshape(((self.C-1) * self.M)), hess=_hess_k, jac=_gradient_k, method="trust-ncg")
-            self.params[k] = np.reshape(sol.x, (self.C-1, self.M))
+
+            sol = minimize(
+                _objective_k,
+                self.params[k].reshape(((self.C - 1) * self.M)),
+                hess=_hess_k,
+                jac=_gradient_k,
+                method="trust-ncg",
+            )
+            self.params[k] = np.reshape(sol.x, (self.C - 1, self.M))
 
     def smooth(self, expectations, data, input, tag):
         """
