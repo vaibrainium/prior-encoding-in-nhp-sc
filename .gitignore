@@ -90,9 +90,3 @@ target/
 
 # Mypy cache
 .mypy_cache/
-
-node_modules/
-.git/
-__pycache__/
-*.log
-large_dataset/

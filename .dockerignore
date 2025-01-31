@@ -1,9 +1,3 @@
 .env
 data
 *.pickle
-node_modules/
-.git/
-*.log
-*.tmp
-build/
-.DS_Store
