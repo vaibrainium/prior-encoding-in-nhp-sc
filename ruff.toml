@@ -1,0 +1,5 @@
+
+line-length = 250
+lint.select = ["E", "F"]
+lint.ignore = ["E722", "F841"]
+unsafe-fixes = true
