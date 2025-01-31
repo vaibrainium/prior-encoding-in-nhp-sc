@@ -41,14 +41,13 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
         glm_hmm.transitions.params = [transition_matrix]
 
         fit_ll = glm_hmm.fit(observations, inputs=inputs, masks=masks, method=fitting_method,
-                             num_iters=n_iters, initialize=False, tolerance=tolerance)
+                            num_iters=n_iters, initialize=False, tolerance=tolerance)
         return glm_hmm, fit_ll
 
     models_glm_hmm = {}
     fit_lls_glm_hmm = {}
     for n_states in state_range:
         print(f'Fitting {n_states} states...')
-
         
         results = Parallel(n_jobs=n_jobs)(
             delayed(fit_single_initialization)(n_states, init_num)
@@ -113,7 +112,6 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
             delayed(fit_model_on_fold)(train_idx, test_idx, glm_hmm, idx_session)
             for train_idx, test_idx in kf.split(np.arange(observations[idx_session].shape[0]))
         )
-
         # Unzip results and ensure consistent shape for log-likelihoods
         models, train_lls, test_lls = zip(*results)
 
