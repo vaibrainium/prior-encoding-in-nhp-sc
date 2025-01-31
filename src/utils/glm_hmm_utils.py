@@ -31,7 +31,8 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
             observations="input_driven_obs",
             observation_kwargs=dict(C=len(np.unique(observations[0]))),
             transitions="standard"
-        )
+        ) 
+        
         # Initialize weights and transition matrix
         glm_hmm.observations.params = glm_weights + np.random.normal(0, 0.2, (n_states, 1, inputs[0].shape[1]))
         transition_matrix = 0.95 * np.eye(n_states) + np.random.multivariate_normal(
@@ -48,7 +49,6 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
     fit_lls_glm_hmm = {}
     for n_states in state_range:
         print(f'Fitting {n_states} states...')
-
         
         results = Parallel(n_jobs=n_jobs)(
             delayed(fit_single_initialization)(n_states, init_num)
@@ -113,7 +113,6 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
             delayed(fit_model_on_fold)(train_idx, test_idx, glm_hmm, idx_session)
             for train_idx, test_idx in kf.split(np.arange(observations[idx_session].shape[0]))
         )
-
         # Unzip results and ensure consistent shape for log-likelihoods
         models, train_lls, test_lls = zip(*results)
 

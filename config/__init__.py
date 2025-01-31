@@ -21,5 +21,6 @@ def load_json(filename):
 # Example of accessing a specific configuration file
 dir_config = load_config('dir-config.yaml')
 main_config = load_config('main.yaml')
+ephys_config = load_config('ephys-config.yaml')
 
 s_probe_path = Path(__file__).parent / 's-probe.json'
