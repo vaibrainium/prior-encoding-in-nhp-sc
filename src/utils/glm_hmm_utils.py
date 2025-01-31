@@ -43,7 +43,7 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
         transition_matrix /= transition_matrix.sum(axis=1, keepdims=True)
         glm_hmm.transitions.params = [transition_matrix]
         fit_ll = glm_hmm.fit(observations, inputs=inputs, masks=masks, method=fitting_method,
-                            num_iters=n_iters, initialize=False, tolerance=tolerance)
+                             num_iters=n_iters, initialize=False, tolerance=tolerance)
         return glm_hmm, fit_ll
     
 
