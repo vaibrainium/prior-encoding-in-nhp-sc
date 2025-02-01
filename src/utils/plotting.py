@@ -10,7 +10,7 @@ import numpy as np
 # matplotlib.style.use(STYLE)
 from pathlib import Path
 
-BASE_DIR = Path(file).parent
+BASE_DIR = Path(__file__).parent
 STYLE = BASE_DIR / "dissemination.mplstyle"
 
 # Constants
