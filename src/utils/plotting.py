@@ -5,9 +5,13 @@ from mpl_toolkits.mplot3d import Axes3D
 from pathlib import Path
 import numpy as np
 
-BASE_DIR = Path("/src/")
-STYLE = BASE_DIR / "src" / "utils" / "dissemination.mplstyle"
-matplotlib.style.use(STYLE)
+# BASE_DIR = Path("/src/")
+# STYLE = BASE_DIR / "src" / "utils" / "dissemination.mplstyle"
+# matplotlib.style.use(STYLE)
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+STYLE = BASE_DIR / "dissemination.mplstyle"
 
 # Constants
 TEXTWIDTH = 9.0  # inches
