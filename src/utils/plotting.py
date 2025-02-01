@@ -8,6 +8,10 @@ import numpy as np
 # BASE_DIR = Path("/src/")
 # STYLE = BASE_DIR / "src" / "utils" / "dissemination.mplstyle"
 # matplotlib.style.use(STYLE)
+from pathlib import Path
+
+BASE_DIR = Path(file).parent
+STYLE = BASE_DIR / "dissemination.mplstyle"
 
 # Constants
 TEXTWIDTH = 9.0  # inches
