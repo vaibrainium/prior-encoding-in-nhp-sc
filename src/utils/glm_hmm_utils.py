@@ -37,7 +37,7 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
 
         # Initialize weights and transition matrix
         glm_hmm.observations.params = glm_weights + np.random.normal(0, 0.2, (n_states, 1, inputs[0].shape[1]))
-        transition_matrix = 0.95 * np.eye(n_states) + np.random.multivariate_normal(
+        transition_matrix = 0.9 * np.eye(n_states) + np.random.multivariate_normal(
             mean=np.zeros(n_states), cov=0.05 * np.eye(n_states), size=n_states
         )
         transition_matrix /= transition_matrix.sum(axis=1, keepdims=True)
@@ -72,6 +72,7 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
     """
     Optimized version of session-wise GLM-HMM fitting with k-fold cross-validation using parallelization.
     """
+    masks = [np.ones_like(arr) for arr in observations] if masks is None else masks
     assert len(observations) == n_sessions, "Observations are not compatible with number of sessions!"
     assert len(inputs) == n_sessions, "Inputs are not compatible with number of sessions!"
     assert len(masks) == n_sessions, "Masks are not compatible with number of sessions!"
