@@ -174,7 +174,7 @@ def get_psychometric_data(data, positive_direction='right'):
     x_data, y_data = zip(*sorted(zip(x_data, y_data)))
     
     # fit psychometric function
-    x_model = np.linspace(-100, 100, 100)
+    x_model = np.linspace(min(x_data), max(x_data), 100)
     model = fit_psychometric_function(x_data, y_data)
     y_model = model.predict(x_model)
     return np.asarray(x_data), np.asarray(y_data), model, np.asarray(x_model), np.asarray(y_model)
