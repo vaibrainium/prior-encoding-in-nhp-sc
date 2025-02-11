@@ -118,3 +118,4 @@ notebooks/*.html
 
 .DS_Store
 
+make.bat
