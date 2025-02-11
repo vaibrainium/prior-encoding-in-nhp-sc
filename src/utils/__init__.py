@@ -21,6 +21,6 @@ class pmf_utils:
 
 # Create a limited interface for glm_hmm_utils
 class glm_hmm_utils:
-    from .glm_hmm_utils import global_fit, session_wise_fit_cv
+    from .glm_hmm_utils import global_fit, session_wise_fit_cv, session_wise_fit
 
 __all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils"]
