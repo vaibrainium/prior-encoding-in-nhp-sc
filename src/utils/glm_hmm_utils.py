@@ -3,6 +3,7 @@ import numpy.random as npr
 import ssm
 from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
+from tqdm import tqdm
 
 
 def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initializations=20,
@@ -150,3 +151,47 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
                 test_ll[idx_session, state_idx, fold_idx] = np.max(test_lls[fold_idx])
 
     return models_session_state_fold, train_ll, test_ll
+
+def session_wise_fit(observations, inputs, masks, n_sessions, init_params, n_states,
+                        fitting_method='em', n_iters=200, tolerance=10**-4, n_jobs=-1):
+    """
+    Optimized version of session-wise GLM-HMM fitting with parallel processing and progress tracking.
+    """
+    masks = [np.ones_like(arr) for arr in observations] if masks is None else masks
+    assert len(observations) == n_sessions, "Observations are not compatible with number of sessions!"
+    assert len(inputs) == n_sessions, "Inputs are not compatible with number of sessions!"
+    assert len(masks) == n_sessions, "Masks are not compatible with number of sessions!"
+    assert "transition_matrices" in init_params and "glm_weights" in init_params, "Initial parameters not provided correctly!"
+    
+    def process_session(idx_session):
+        """
+        Fit a GLM-HMM for a specific session.
+        """
+        glm_hmm = ssm.HMM(
+            n_states, observations[0].shape[1], inputs[0].shape[1],
+            observations="input_driven_obs",
+            observation_kwargs=dict(C=len(np.unique(observations[0]))),
+            transitions="standard"
+        )
+        glm_hmm.observations.params = init_params['glm_weights'][idx_session]
+        glm_hmm.transitions.params = init_params['transition_matrices'][idx_session]
+        
+        fit_ll = glm_hmm.fit(
+            observations[idx_session],
+            inputs=inputs[idx_session],
+            masks=masks[idx_session],
+            method=fitting_method,
+            num_iters=n_iters,
+            initialize=False,
+            tolerance=tolerance
+        )
+        return idx_session, glm_hmm, fit_ll
+    
+    results = []
+    for result in tqdm(Parallel(n_jobs=n_jobs)(delayed(process_session)(idx_session) for idx_session in range(n_sessions)), total=n_sessions, desc="Fitting sessions"):
+        results.append(result)
+    
+    models_session = {idx_session: model for idx_session, model, _ in results}
+    fit_ll_session = {idx_session: fit_ll for idx_session, _, fit_ll in results}
+    
+    return models_session, fit_ll_session
