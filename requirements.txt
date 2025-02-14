@@ -34,3 +34,9 @@ ipywidgets
 KDEpy
 kilosort
 spikeinterface
+
+# Modeling packages
+graphviz
+cython
+git+https://github.com/vaibrainium/ssm.git
+git+https://github.com/lnccbrown/HSSM.git
