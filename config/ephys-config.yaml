@@ -1,4 +1,8 @@
 alignment_settings_GP: [
+    {'alignment_event': 'fixation_onset',
+    'start_time_ms': -500,
+    'end_time_ms': 100},
+
     {'alignment_event': 'target_onset',
     'start_time_ms': -200,
     'end_time_ms': 300},
