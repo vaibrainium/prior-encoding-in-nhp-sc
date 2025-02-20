@@ -7,9 +7,6 @@ COPY . /src/
 
 RUN apt-get update -y
 RUN apt-get upgrade -y
-
-RUN pip3 install git+https://github.com/lnccbrown/HSSM.git
-RUN apt-get install graphviz -y
 RUN pip3 install -e /src/.
 RUN pip3 install -r /src/requirements.txt  
 
