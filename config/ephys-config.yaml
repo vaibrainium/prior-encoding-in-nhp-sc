@@ -1,14 +1,13 @@
-alignment_settings_GP: [
-    {'alignment_event': 'target_onset',
-    'start_time_ms': -200,
-    'end_time_ms': 300},
+alignment_settings_GP: {
+    'target_onset': {
+        'start_time_ms': -200,
+        'end_time_ms': 300},
+    'stimulus_onset': {
+        'start_time_ms': -100,
+        'end_time_ms': 800},
+    'response_onset': {
+        'start_time_ms': -300,
+        'end_time_ms': 50},
+}
 
-    {'alignment_event': 'stimulus_onset',
-    'start_time_ms': -100,
-    'end_time_ms': 800},
-
-    {'alignment_event': 'response_onset',
-    'start_time_ms': -300,
-    'end_time_ms': 50}]
-
-alignment_buffer: 50 
+alignment_buffer: 50

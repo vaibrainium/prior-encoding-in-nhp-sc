@@ -22,6 +22,7 @@ bokeh
 python-dotenv>=0.5.1
 SciencePlots
 omegaconf
+plotly
 
 # backwards compatibility
 pathlib2
@@ -34,3 +35,10 @@ ipywidgets
 KDEpy
 kilosort
 spikeinterface
+plotly
+
+# Modeling packages
+graphviz
+cython
+git+https://github.com/vaibrainium/ssm.git
+git+https://github.com/lnccbrown/HSSM.git
