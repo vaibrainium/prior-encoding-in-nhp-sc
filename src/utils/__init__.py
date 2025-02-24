@@ -23,6 +23,7 @@ class pmf_utils:
 class glm_hmm_utils:
     from .glm_hmm_utils import global_fit, session_wise_fit_cv, session_wise_fit
 
-import ephys_utils
+class ephys_utils:
+    from .ephys_utils import get_trial_num, get_neural_data_from_trial_num
 
 __all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils"]
