@@ -13,7 +13,7 @@ class plot_utils:
     )
 
 class pmf_utils:
-    from .PMF_utils import (
+    from .pmf_utils import (
         fit_psychometric_function,
         get_psychometric_data,
         get_chronometric_data,

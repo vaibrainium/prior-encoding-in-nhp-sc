@@ -1,205 +1,167 @@
 import warnings
-
 import numpy as np
-from matplotlib import pyplot as plt
-from scipy import optimize
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.preprocessing import StandardScaler
 
-# suppress warnings
+# Suppress warnings
 warnings.filterwarnings("ignore")
 
 
 class PsychometricFunction(BaseEstimator, RegressorMixin):
-
     """
-    Fit a logistic regression (Logit or it's modifications)
+    Fits a logistic regression model for psychometric analysis.
 
-    Model parameters:
-        - mean (bias): The mean of logistic distribution.
-        - variance (threshold): Spread/slope of distribution.
-        - lapse_rate: Free parameter to indicate deviation in accuracy from 100% for easiest stimulus condition (at 0 and 1 of x-axis). Can either be same for both choices or different for each choice.
-        - guess_rate: Same as lapse rate for lower bound.
-
-    For all parameters, starting point is set as a mean of the upper and lower limit.
-    :param mean_lims: Default (-100, 100).
-    :param var_lims: Default (0.001, 20).
-    :param lapse_rate_lims: Default (0.01, 0.2).
-    :param guess_rate_lims: Default (0.01, 0.2).
+    Models:
+        - "logit_2": Logistic function with mean and variance (without lapse rate).
+        - "logit_3": Logistic function with lapse rate.
+        - "logit_4": Logistic function with lapse and guess rates.
     """
 
-    # def __init__(self, model= "logit_3", mean_lims = (-100, 100), var_lims = (.001, 20), lapse_rate_lims = (.01,.2), guess_rate_lims = (.01,.2)) -> None:
     def __init__(
         self,
-        model="logit_3",
+        model="logit_4",
         mean_lims=(-100, 100),
         var_lims=(1e-5, 30),
         lapse_rate_lims=(0, 0.1),
         guess_rate_lims=(0, 0.1),
-    ) -> None:
+    ):
         self.model = model
         self.mean_lims = mean_lims
         self.var_lims = var_lims
         self.lapse_rate_lims = lapse_rate_lims
         self.guess_rate_lims = guess_rate_lims
 
-    def __post_init__(self) -> None:
-        if self.model not in ["logit_3", "logit_4"]:
-            raise ValueError(
-                f"Unknown mode: {self.model}. Available models: 'logit_4', 'logit_4'"
-            )
+        if model not in ["logit_2", "logit_3", "logit_4"]:
+            raise ValueError(f"Unknown model: {model}. Choose 'logit_2', 'logit_3' or 'logit_4'.")
 
-    def logit_3(
-        self, x: np.ndarray, mean: float, var: float, lapse_rate: float
-    ) -> np.ndarray:
-        return lapse_rate + ((1.0 - 2 * lapse_rate) / (1 + np.exp(-var * (x - mean))))
+    def logit_2(self, x, mean, var):
+        """Logistic function with only mean and variance."""
+        return 1 / (1 + np.exp(-var * (x - mean)))
 
-    def logit_4(
-        self,
-        x: np.ndarray,
-        mean: float,
-        var: float,
-        lapse_rate: float,
-        guess_rate: float,
-    ) -> np.ndarray:
-        return lapse_rate + (
-            (1.0 - guess_rate - lapse_rate) / (1 + np.exp(-var * (x - mean)))
-        )
+    def logit_3(self, x, mean, var, lapse_rate):
+        """Logistic function with lapse rate."""
+        return lapse_rate + ((1 - 2 * lapse_rate) / (1 + np.exp(-var * (x - mean))))
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "PsychometricFunction":
+    def logit_4(self, x, mean, var, lapse_rate, guess_rate):
+        """Logistic function with lapse and guess rates."""
+        return lapse_rate + ((1 - guess_rate - lapse_rate) / (1 + np.exp(-var * (x - mean))))
 
-        # Find nan values in y and remove them from x and y at the same index
-        nan_indices = np.argwhere(np.isnan(y))
-        x = np.delete(x, nan_indices)
-        y = np.delete(y, nan_indices)
+    def fit(self, x, y, trial_counts=None):
+        """Fit the psychometric function to data, incorporating trial counts as weights."""
+        # Remove NaNs
+        mask = ~np.isnan(y)
+        x, y = x[mask], y[mask]
+        if trial_counts is not None:
+            trial_counts = trial_counts[mask]
 
-        if self.model.lower() == "logit_3":
+        # Choose fitting function based on model
+        if self.model == "logit_2":
+            self._fit_func = self.logit_2
+            param_lims = [self.mean_lims, self.var_lims]  # Only mean and variance
+        elif self.model == "logit_3":
             self._fit_func = self.logit_3
-            lims = [self.mean_lims, self.var_lims, self.lapse_rate_lims]
-            bounds = (
-                [
-                    self.mean_lims[0],
-                    self.var_lims[0],
-                    self.lapse_rate_lims[0],
-                ],
-                [
-                    self.mean_lims[1],
-                    self.var_lims[1],
-                    self.lapse_rate_lims[1],
-                ],
-            )
-
-        else:
+            param_lims = [self.mean_lims, self.var_lims, self.lapse_rate_lims]
+        elif self.model == "logit_4":
             self._fit_func = self.logit_4
-            lims = [
-                self.mean_lims,
-                self.var_lims,
-                self.lapse_rate_lims,
-                self.guess_rate_lims,
-            ]
-            bounds = (
-                [
-                    self.mean_lims[0],
-                    self.var_lims[0],
-                    self.lapse_rate_lims[0],
-                    self.guess_rate_lims[0],
-                ],
-                [
-                    self.mean_lims[1],
-                    self.var_lims[1],
-                    self.lapse_rate_lims[1],
-                    self.guess_rate_lims[1],
-                ],
-            )
+            param_lims = [self.mean_lims, self.var_lims, self.lapse_rate_lims, self.guess_rate_lims]
 
-        popt, pcov = optimize.curve_fit(
-            f=self._fit_func,
-            xdata=x,
-            ydata=y,
-            p0=[np.min(lim) for lim in lims],
-            bounds=bounds,
+        bounds = list(zip(*param_lims))
+        initial_guess = [np.min(lim) for lim in param_lims]
+
+        # Compute weights: More trials → Higher weight
+        if trial_counts is not None:
+            weights = np.sqrt(trial_counts)  # Square root scaling to balance influence
+            sigma = 1 / weights  # Use inverse for curve fitting
+        else:
+            sigma = None  # No weighting if trial_counts is not provided
+
+        # Fit using weighted least squares (WLS)
+        popt, pcov = curve_fit(
+            self._fit_func, x, y, p0=initial_guess, bounds=bounds, sigma=sigma, absolute_sigma=False
         )
-
-        self.coefs_ = {"mean": popt[0], "var": popt[1], "lapse_rate": popt[2]}
-        if self.model.lower() == "logit_4":
-            self.coefs_.update({"guess_rate": popt[3]})
+        # Store results
+        self.coefs_ = {"mean": popt[0], "var": popt[1]}
+        if self.model == "logit_3" or self.model == "logit_4":
+            self.coefs_["lapse_rate"] = popt[2]
+        if self.model == "logit_4":
+            self.coefs_["guess_rate"] = popt[3]
 
         self.covar_ = pcov
-
         return self
 
-    def predict(self, x: np.ndarray) -> np.ndarray:
+    def predict(self, x):
+        """Predict using the fitted model."""
         return self._fit_func(x, **self.coefs_)
 
-    def plot(
-        self,
-        x: np.ndarray,
-        y: np.ndarray,
-        show: bool = False,
-        y_label: str = "Prop. of Positive choices",
-        x_label: str = "Coherence",
-    ):
-        fig, ax = plt.subplots()
-
-        if y is not None:
-            ax.scatter(x, y, label="y")
-
-        x = np.arange(-100, 100, 0.1)
-        ax.plot(x, self.predict(x), label="y_pred")
-
-        ax.set_xlim(-100, 100)
-        ax.set_ylim(0, 1)
-
-        ax.legend()
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
-        fig.tight_layout()
-
-        if show:
-            fig.show()
-
-        return fig
+def fit_psychometric_function(x_data, y_data, trial_counts, model_type, **kwargs):
+    """Fit psychometric function with user-defined or default parameters."""
+    params = {
+        "model": model_type,
+        "mean_lims": (-100, 100),
+        "var_lims": (1e-5, 30),
+        "lapse_rate_lims": (1e-5, 0.2),
+        "guess_rate_lims": (1e-5, 0.2),
+        **kwargs,  # Override defaults with user input
+    }
+    return PsychometricFunction(**params).fit(x_data, y_data, trial_counts)
 
 
-def get_psychometric_data(data, positive_direction='right'):
-    x_data = np.asarray([])
-    y_data = np.asarray([])
-    for _, coh in enumerate(np.unique(data['signed_coherence'])):
-        if positive_direction == 'right':
-            x_data = np.append(x_data, coh)
-            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 1) / np.sum(data['signed_coherence'] == coh))
-        elif positive_direction == 'left':
-            x_data = np.append(x_data, -coh)
-            y_data = np.append(y_data, np.sum(data['choice'][data['signed_coherence'] == coh] == 0) / np.sum(data['signed_coherence'] == coh))
-    # sorting
-    x_data, y_data = zip(*sorted(zip(x_data, y_data)))
-    
-    # fit psychometric function
+def get_psychometric_data(data, positive_direction="right", fit=True, model_type="logit_4", **kwargs):
+    """Extracts psychometric data and optionally fits a model."""
+    unique_coh = np.unique(data["signed_coherence"])
+    x_data = np.where(positive_direction == "left", -unique_coh, unique_coh)
+    y_data = []
+    trial_counts = []
+    for coh in unique_coh:
+        mask = data["signed_coherence"] == coh
+        total_trials = np.sum(mask)
+
+        if total_trials == 0:
+            continue  # Skip coherence levels with no trials
+
+        prop_positive = np.mean(data["choice"][mask] == (positive_direction == "right"))
+        y_data.append(prop_positive)
+        trial_counts.append(total_trials)
+
+    # Convert to numpy arrays and sort
+    x_data, y_data, trial_counts = map(np.array, zip(*sorted(zip(x_data, y_data, trial_counts))))
+
+    if not fit:
+        return x_data, y_data
+    # Fit the model using the specified model_type (logit_2, logit_3, logit_4)
+    model = fit_psychometric_function(x_data, y_data, trial_counts=trial_counts, model_type=model_type, **kwargs)
     x_model = np.linspace(min(x_data), max(x_data), 100)
-    model = fit_psychometric_function(x_data, y_data)
     y_model = model.predict(x_model)
-    return np.asarray(x_data), np.asarray(y_data), model, np.asarray(x_model), np.asarray(y_model)
+
+    return x_data, y_data, model, x_model, y_model
 
 
-def fit_psychometric_function(x_data, y_data, **model_kwargs):
-    defaults = {"model": "logit_4", "var_lims": (1e-5, 10), "lapse_rate_lims": (1e-5, 0.2), "guess_rate_lims": (1e-5, 0.2)}
-    for k, v in defaults.items():
-        val = model_kwargs.get(k, v)
-        model_kwargs[k] = val
-    model = PsychometricFunction(**model_kwargs).fit(x_data, y_data)
-    return model
+def get_chronometric_data(data, positive_direction="right"):
+    """Computes reaction time statistics for different coherence levels."""
+    unique_coh = np.unique(data["signed_coherence"])
+    coherences, rt_median, rt_mean, rt_sd = [], [], [], []
+
+    for coh in unique_coh:
+        trials = data[(data["signed_coherence"] == coh) & (data["outcome"] == 1)]
+        if trials.empty:
+            continue
+
+        coherences.append(coh if positive_direction == "right" else -coh)
+        rt_median.append(np.median(trials["response_time"]))
+        rt_mean.append(np.mean(trials["response_time"]))
+        rt_sd.append(np.std(trials["response_time"]))
+
+    return map(np.array, zip(*sorted(zip(coherences, rt_median, rt_mean, rt_sd))))
 
 
-def get_chronometric_data(data, positive_direction='right'):
-    coherences = np.asarray([])
-    chrono = np.asarray([])
-    for _, coh in enumerate(np.unique(data['signed_coherence'])):
-        if positive_direction == 'right':
-            coherences = np.append(coherences, coh)
-            chrono = np.append(chrono, np.mean(data['response_time'][(data['signed_coherence'] == coh) & (data['outcome'] == 1)]))
-        elif positive_direction == 'letf':
-            coherences = np.append(coherences, -coh)
-            chrono = np.append(chrono, np.mean(data['response_time'][(data['signed_coherence'] == coh) & (data['outcome'] == 1)]))
-            
-    # sort coherences and chrono by coherence
-    coherences, chrono = zip(*sorted(zip(coherences, chrono)))
-    return coherences, chrono
+def get_accuracy_data(data, positive_direction="right"):
+    """Computes accuracy across coherence levels."""
+    unique_coh = np.unique(data["signed_coherence"])
+    coherences = np.where(positive_direction == "left", -unique_coh, unique_coh)
+    accuracy = np.array([
+        np.mean(data["outcome"][data["signed_coherence"] == coh] == 1) for coh in unique_coh
+    ])
+
+    return map(np.array, zip(*sorted(zip(coherences, accuracy))))
