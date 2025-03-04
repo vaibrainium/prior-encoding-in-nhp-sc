@@ -20,8 +20,9 @@ from sklearn.preprocessing import StandardScaler
 #     return neuronal_data
 
 def get_trial_num(trial_data, coherence, choice, outcome=None):
+    trial_data = trial_data[~np.isnan(trial_data.reaction_time)]
     if coherence == 0 or outcome is None:
-        idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice)
+        idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) 
     elif outcome == 1:
         idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) & (trial_data["stimulus"] * (trial_data["choices"]*2-1) > 0)
     elif outcome == 0:
