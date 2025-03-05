@@ -1,5 +1,4 @@
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 # def extract_neuronal_data(alignment, neuron_metadata, state_occupancy, data_type="convolved_spike_trains"):
 #     neuronal_data = {
@@ -19,19 +18,21 @@ from sklearn.preprocessing import StandardScaler
 
 #     return neuronal_data
 
-def get_trial_num(trial_data, coherence, choice, outcome=None):
-    trial_data = trial_data[~np.isnan(trial_data.reaction_time)]
-    if coherence == 0 or outcome is None:
-        idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) 
-    elif outcome == 1:
-        idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) & (trial_data["stimulus"] * (trial_data["choices"]*2-1) > 0)
-    elif outcome == 0:
-        idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) & (trial_data["stimulus"] * (trial_data["choices"]*2-1) < 0)
-    return np.array(trial_data["trial_num"][idx].values.reshape(-1, 1))
 
-def get_neural_data_from_trial_num(neuronal_data, trial_num, type = "convolved_spike_trains"):
-    index = np.where(np.isin(np.array(neuronal_data["trial_number"]), trial_num))[0]
-    if type == "spike_trains":
-        return np.array(neuronal_data["spike_trains"][index])
-    elif type == "convolved_spike_trains":
-        return np.array(neuronal_data["convolved_spike_trains"][index])
+def get_trial_num(trial_data, coherence, choice, outcome=None):
+	trial_data = trial_data[~np.isnan(trial_data.reaction_time)]
+	if coherence == 0 or outcome is None:
+		idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice)
+	elif outcome == 1:
+		idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) & (trial_data["stimulus"] * (trial_data["choices"] * 2 - 1) > 0)
+	elif outcome == 0:
+		idx = (np.abs(trial_data.stimulus) == coherence) & (trial_data.choices == choice) & (trial_data["stimulus"] * (trial_data["choices"] * 2 - 1) < 0)
+	return np.array(trial_data["trial_num"][idx].values.reshape(-1, 1))
+
+
+def get_neural_data_from_trial_num(neuronal_data, trial_num, type="convolved_spike_trains"):
+	index = np.where(np.isin(np.array(neuronal_data["trial_number"]), trial_num))[0]
+	if type == "spike_trains":
+		return np.array(neuronal_data["spike_trains"][index])
+	elif type == "convolved_spike_trains":
+		return np.array(neuronal_data["convolved_spike_trains"][index])
