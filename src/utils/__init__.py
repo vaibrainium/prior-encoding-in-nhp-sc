@@ -29,4 +29,4 @@ class ephys_utils:
 	from .ephys_utils import get_trial_num, get_neural_data_from_trial_num
 
 
-__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils"]
+__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils", "bayesian_encoding"]
