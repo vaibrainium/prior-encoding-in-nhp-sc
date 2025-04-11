@@ -11,8 +11,7 @@ services:
       - ./:/src/
       - "${DATAPATH}:/mnt/prior-data"
 
-    # command:     # Already implemented in WalkerLab image by running jupyter in the background
-    command: sleep infinity; nvidia-smi
+    command: sleep infinity; nvidia-smi;
     deploy:
       resources:
         reservations:
@@ -20,11 +19,11 @@ services:
             - driver: nvidia
               capabilities: [gpu]
 
-# Mounting the CIFS volume outside Docker
-volumes:
-  prior_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: "${DATAPATH}"
+# # Mounting the CIFS volume outside Docker
+# volumes:
+#   prior_data:
+#     driver: local
+#     driver_opts:
+#       type: none
+#       o: bind
+#       device: "${DATAPATH}"
