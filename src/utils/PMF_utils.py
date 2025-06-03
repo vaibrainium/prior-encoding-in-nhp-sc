@@ -12,9 +12,9 @@ class PsychometricFunction(BaseEstimator, RegressorMixin):
 	"""Fits a logistic regression model for psychometric analysis.
 
 	Models:
-	    - "logit_2": Logistic function with mean and variance (without lapse rate).
-	    - "logit_3": Logistic function with lapse rate.
-	    - "logit_4": Logistic function with lapse and guess rates.
+		- "logit_2": Logistic function with mean and variance (without lapse rate).
+		- "logit_3": Logistic function with lapse rate.
+		- "logit_4": Logistic function with lapse and guess rates.
 	"""
 
 	def __init__(
@@ -67,7 +67,7 @@ class PsychometricFunction(BaseEstimator, RegressorMixin):
 			param_lims = [self.mean_lims, self.var_lims, self.lapse_rate_lims, self.guess_rate_lims]
 
 		bounds = list(zip(*param_lims, strict=False))
-		initial_guess = [np.min(lim) for lim in param_lims]
+		initial_guess = [np.mean(param_lims[0])] + [np.min(lim) for lim in param_lims[1:]]
 
 		# Compute weights: More trials → Higher weight
 		if trial_counts is not None:
@@ -77,7 +77,7 @@ class PsychometricFunction(BaseEstimator, RegressorMixin):
 			sigma = None  # No weighting if trial_counts is not provided
 
 		# Fit using weighted least squares (WLS)
-		popt, pcov = curve_fit(self._fit_func, x, y, p0=initial_guess, bounds=bounds, sigma=sigma, absolute_sigma=False)
+		popt, pcov = curve_fit(self._fit_func, x, y, p0=initial_guess, bounds=bounds, sigma=sigma, absolute_sigma=False, maxfev=10000)
 		# Store results
 		self.coefs_ = {"mean": popt[0], "var": popt[1]}
 		if self.model in ("logit_3", "logit_4"):
