@@ -5,7 +5,6 @@ from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-
 def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initializations=20, fitting_method="em", n_iters=200, tolerance=10**-4, n_jobs=-1):
 	"""
 	Optimized version of global GLM-HMM fitting with parallelization over initializations.
@@ -21,7 +20,6 @@ def global_fit(observations, inputs, masks, state_range=np.arange(2, 6), n_initi
 		Fit GLM-HMM with a single initialization.
 		"""
 		npr.seed(init_num * n_states)  # Set seed for reproducibility
-
 		glm_hmm = ssm.HMM(n_states, observations[0].shape[1], inputs[0].shape[1], observations="input_driven_obs", observation_kwargs=dict(C=len(np.unique(observations[0]))), transitions="standard")
 
 		# Initialize weights and transition matrix

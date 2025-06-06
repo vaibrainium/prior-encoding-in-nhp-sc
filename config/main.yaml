@@ -1,0 +1,4 @@
+rejection_criteria: {
+  mean_threshold: 4,
+  var_threshold: 0.03
+}
