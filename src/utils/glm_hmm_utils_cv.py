@@ -48,7 +48,7 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 		"""
 		session_length = observations[idx_session].shape[0]
 		train_idx, test_idx = cross_validation_split(session_length, idx_split, k_folds=k_folds)
-		train_obs = [observations[idx_session][train] for train in tran_idx]
+		train_obs = [observations[idx_session][train] for train in train_idx]
 		test_obs = [observations[idx_session][test] for test in test_idx]
 		train_masks = [masks[idx_session][train] for train in train_idx]
 		test_masks = [masks[idx_session][test] for test in test_idx]
