@@ -66,7 +66,7 @@ def prepare_input_data(data, input_dim, valid_idx, first_trial):
 
 # --- Main Logic ---
 
-for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
+for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior", "all_trials_uneq_prior"]:
 	n_states = 2  # number of discrete states
 	obs_dim = 1  # number of observed dimensions: choice(toRF/awayRF)
 	num_categories = 2  # number of categories for output
@@ -95,6 +95,8 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 
 		if "eq_prior" in _TRIALS:
 			GP_trial_data = GP_trial_data[GP_trial_data.prob_toRF == 50].reset_index()
+		if "uneq_prior" in _TRIALS:
+			GP_trial_data = GP_trial_data[GP_trial_data.prob_toRF != 50].reset_index()
 
 		# Fill missing values for important columns
 		GP_trial_data['choice'] = GP_trial_data.choice.fillna(-1)
