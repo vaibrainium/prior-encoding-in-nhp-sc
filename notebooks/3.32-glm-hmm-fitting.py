@@ -1,29 +1,32 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[47]:
+import sys, os
 from pathlib import Path
 import numpy as np
 import numpy.random as npr
 import pandas as pd
 from sklearn import preprocessing
+import pickle
+import copy
+
+# Set up project root and import project-specific modules
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+	sys.path.insert(0, PROJECT_ROOT)
 
 from notebooks.imports import *
 from config import dir_config, main_config
 from src.utils.glm_hmm_utils import *
-import pickle
-import copy
 
-
-# In[ ]:
-
-
+# Define directories
 compiled_dir = Path(dir_config.data.compiled)
 processed_dir = Path(dir_config.data.processed)
 
-
-# In[ ]:
+# Load session metadata
 session_metadata = pd.read_csv(processed_dir / 'sessions_metadata.csv')
+
+# --- Helper Functions ---
 
 def extract_previous_data(trial_data, valid_idx, first_trial, n_trial_back=3):
 	np.random.seed(1)
@@ -48,31 +51,27 @@ def prepare_input_data(data, input_dim, valid_idx, first_trial):
 		current_trial_param = 1
 	else:
 		current_trial_param = 2
-	n_trial_back=(input_dim - current_trial_param) // 2
+	n_trial_back = (input_dim - current_trial_param) // 2
 	X = np.ones((1, data.shape[0] - first_trial, input_dim))
 
 	current_stimulus = data.coherence * (2 * data.target - 1)
 	current_stimulus = current_stimulus / 100
-
 	X[0, :, 0] = current_stimulus[first_trial:]  # current stimulus
-	X[0, :, current_trial_param:current_trial_param+n_trial_back], X[0, :, current_trial_param+n_trial_back: current_trial_param+2*n_trial_back] = extract_previous_data(data, valid_idx, first_trial, n_trial_back=n_trial_back)
+
+	prev_choice, prev_target = extract_previous_data(data, valid_idx, first_trial, n_trial_back)
+	X[0, :, current_trial_param:current_trial_param + n_trial_back] = prev_choice
+	X[0, :, current_trial_param + n_trial_back: current_trial_param + 2 * n_trial_back] = prev_target
+
 	return list(X)
 
-
-# In[ ]:
-
-
+# --- Main Logic ---
 
 for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 	n_states = 2  # number of discrete states
 	obs_dim = 1  # number of observed dimensions: choice(toRF/awayRF)
 	num_categories = 2  # number of categories for output
 
-	if "no_bias" in _TRIALS:
-		current_trial_param = 1
-	else:
-		current_trial_param = 2
-
+	current_trial_param = 1 if "no_bias" in _TRIALS else 2
 	n_trial_back = 1
 
 	input_dim = current_trial_param + 2*n_trial_back  # input dimensions: current signed coherence, 1(bias), previous choice(toRF/awayRF), previous target side(toRF/awayRF)
@@ -88,7 +87,6 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 	# Pre-build a mapping from session_id to prior_direction for efficient lookup
 	prior_direction_map = session_metadata.set_index("session_id")["prior_direction"].to_dict()
 
-	# Process each session
 	for session_id in session_metadata["session_id"]:
 
 		# Read trial data for each session
@@ -111,20 +109,17 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 
 		# Prepare inputs and choices
 		inputs = prepare_input_data(GP_trial_data, input_dim, valid_idx, first_trial)
-		choices = GP_trial_data.choice.values.reshape(-1, 1).astype("int")
-		choices = choices[first_trial:]
+		choices = GP_trial_data.choice.values.reshape(-1, 1).astype("int")[first_trial:]
 
 		# Adjust invalid_idx and prepare mask
 		invalid_idx = np.where(choices == -1)[0]
 
 		if "all_trials" in _TRIALS:
-			# For training, replace -1 with a random sample from 0,1
+			# For training, replace -1 with a random sample from 0,1			
 			choices[choices == -1] = np.random.choice(2, invalid_idx.shape[0])
-
-			# Prepare mask
+			
 			mask = np.ones_like(choices, dtype=bool)
 			mask[invalid_idx] = 0
-
 			# Get trial numbers and prob_toRF for the cropped session
 			GP_trial_num = np.array(GP_trial_data.trial_number)[first_trial:]
 			prob_toRF = np.array(GP_trial_data.prob_toRF)[first_trial:]
@@ -136,7 +131,7 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 		if prior_direction == 'awayRF':
 			inputs[0][:, 0] = -inputs[0][:, 0]  # Flip the direction for input features
 			inputs[0][:, 2:] = -inputs[0][:, 2:]
-			choices = 1-choices  # Flip the choices
+			choices = 1 - choices # Flip the choices
 
 		assert len(choices) == len(inputs[0]), f"Length mismatch: {len(choices)} vs {len(inputs[0])}"
 		assert len(mask) == len(inputs[0]), f"Length mismatch: {len(mask)} vs {len(inputs[0])}"
@@ -151,25 +146,17 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 		GP_trial_num_session_wise.append(GP_trial_num)
 		prob_toRF_session_wise.append(prob_toRF)
 
-
-	# In[ ]:
-
-
+	# Normalize inputs (excluding bias term)
 	unnormalized_inputs_session_wise = copy.deepcopy(inputs_session_wise)
-	# scaling all input variables
 	for idx_session in range(len(session_metadata)):
 		mask = masks_session_wise[idx_session][:, 0]
 		inputs_session_wise[idx_session][mask, 0] = preprocessing.scale(inputs_session_wise[idx_session][mask, 0], axis=0)
 		inputs_session_wise[idx_session][mask, 2:] = preprocessing.scale(inputs_session_wise[idx_session][mask, 2:], axis=0)
 
 
-	# In[ ]:
-
-
 	models_glm_hmm, fit_lls_glm_hmm = global_fit(choices_session_wise, inputs_session_wise, state_range=np.arange(1, 6), masks=masks_session_wise, n_iters=2500, n_initializations=20)
 
 
-	# In[ ]:
 	# get best model of 20 initializations for each state
 	init_params = {"glm_weights": {}, "transition_matrices": {}}
 	for n_states in np.arange(1, 6):
@@ -177,8 +164,6 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior"]:
 		init_params["glm_weights"][n_states] = models_glm_hmm[n_states][best_idx].observations.params
 		init_params["transition_matrices"][n_states] = models_glm_hmm[n_states][best_idx].transitions.params
 
-
-	# In[ ]:
 
 
 	# session-wise fitting with 5 fold cross-validation
