@@ -19,7 +19,7 @@ def cross_validation_split(session_length, idx_split=0, n_sub_block = 4, k_folds
 
 	test_idx = []
 	for i in range(n_sub_block):
-		if i == n_sub_block - 1 & idx_split == k_folds - 1:
+		if i == n_sub_block - 1 and idx_split == k_folds - 1:
 			end_idx = session_length
 			start_idx = (i * k_folds + idx_split) * block_length
 		else:
@@ -36,16 +36,20 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 	"""
 	Optimized version of session-wise GLM-HMM fitting with k-fold cross-validation using parallelization.
 	"""
+	
 	masks = [np.ones_like(arr) for arr in observations] if masks is None else masks
 	assert len(observations) == n_sessions, "Observations are not compatible with number of sessions!"
 	assert len(inputs) == n_sessions, "Inputs are not compatible with number of sessions!"
 	assert len(masks) == n_sessions, "Masks are not compatible with number of sessions!"
 	assert "transition_matrices" in init_params.keys() and "glm_weights" in init_params.keys(), "Initial parameters not provided correctly!"
-
-	def fit_model_on_fold(idx_split, glm_hmm, idx_session):
+	def fit_model_on_fold(idx_split, idx_session):
 		"""
 		Fit a GLM-HMM on one fold and compute training and testing log-likelihoods.
 		"""
+		glm_hmm = ssm.HMM(n_states, observations[0].shape[1], inputs[0].shape[1], observations="input_driven_obs", observation_kwargs=dict(C=len(np.unique(observations[0]))), transitions="standard")
+		glm_hmm.observations.params = np.copy(init_params["glm_weights"][n_states])
+		glm_hmm.transitions.params = np.copy(init_params["transition_matrices"][n_states])
+
 		session_length = observations[idx_session].shape[0]
 		train_idx, test_idx = cross_validation_split(session_length, idx_split, k_folds=k_folds)
 		train_obs = [observations[idx_session][train] for train in train_idx]
@@ -54,24 +58,24 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 		test_masks = [masks[idx_session][test] for test in test_idx]
 		train_inputs = [inputs[idx_session][train] for train in train_idx]
 		test_inputs = [inputs[idx_session][test] for test in test_idx]
+
 		# Fit the model on the training data
-		train_ll = glm_hmm.fit(train_obs, inputs=train_inputs, masks=train_masks, method=fitting_method, num_iters=n_iters, initialize=False, tolerance=tolerance)
+		train_elbo = glm_hmm.fit(train_obs, inputs=train_inputs, masks=train_masks, method=fitting_method, num_iters=n_iters, initialize=False, tolerance=tolerance)
+		# return the elbo/log-posterior in progress
 		test_ll = glm_hmm.log_likelihood(test_obs, inputs=test_inputs, masks=test_masks)
+		train_ll = glm_hmm.log_likelihood(train_obs, inputs=train_inputs, masks=train_masks) 
 		return glm_hmm, train_ll, test_ll
 
 	def process_session_state_fold(idx_session, n_states):
 		"""
 		Fit a GLM-HMM for a specific session and state with cross-validation.
 		"""
-		glm_hmm = ssm.HMM(n_states, observations[0].shape[1], inputs[0].shape[1], observations="input_driven_obs", observation_kwargs=dict(C=len(np.unique(observations[0]))), transitions="standard")
-		glm_hmm.observations.params = init_params["glm_weights"][n_states]
-		glm_hmm.transitions.params = init_params["transition_matrices"][n_states]
-
+		
 		# Collecting results across all folds
-		results = Parallel(n_jobs=n_jobs)(delayed(fit_model_on_fold)(idx_split, glm_hmm, idx_session) for idx_split in np.arange(k_folds))
+		results = Parallel(n_jobs=n_jobs)(delayed(fit_model_on_fold)(idx_split, idx_session) for idx_split in np.arange(k_folds))
 		# Unzip results and ensure consistent shape for log-likelihoods
-		models, train_lls, test_lls = zip(*results)
-
+		models, train_lls, test_lls = zip(*results)		
+		
 		# Convert train_lls and test_lls into lists of lists to handle varying lengths
 		train_ll_list = [ll for ll in train_lls]  # List of lists for train log-likelihoods
 		test_ll_list = [ll for ll in test_lls]  # List of lists for test log-likelihoods
@@ -92,11 +96,10 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 			print(f"Fitting {n_states} states...")
 			models, train_lls, test_lls = process_session_state_fold(idx_session, n_states)
 			models_session_state_fold[idx_session][n_states] = models
-
+			
 			# Convert the list of log-likelihoods to arrays
-			for fold_idx in range(k_folds):
-				train_ll[idx_session, state_idx, fold_idx] = np.max(train_lls[fold_idx])
-				test_ll[idx_session, state_idx, fold_idx] = np.max(test_lls[fold_idx])
+			train_ll[idx_session, state_idx, :] = train_lls
+			test_ll[idx_session, state_idx, :] = test_lls
 
 	return models_session_state_fold, train_ll, test_ll
 
