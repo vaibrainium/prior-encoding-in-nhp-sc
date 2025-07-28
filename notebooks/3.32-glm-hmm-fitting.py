@@ -18,6 +18,7 @@ if PROJECT_ROOT not in sys.path:
 from notebooks.imports import *
 from config import dir_config, main_config
 from src.utils.glm_hmm_utils import *
+from src.utils.glm_hmm_utils_cv import *
 
 # Define directories
 compiled_dir = Path(dir_config.data.compiled)
@@ -66,7 +67,7 @@ def prepare_input_data(data, input_dim, valid_idx, first_trial):
 
 # --- Main Logic ---
 
-for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior", "all_trials_uneq_prior"]:
+for _TRIALS in ["all_trials", "all_trials_eq_prior", "all_trials_uneq_prior", "all_trials_no_bias"]:
 	n_states = 2  # number of discrete states
 	obs_dim = 1  # number of observed dimensions: choice(toRF/awayRF)
 	num_categories = 2  # number of categories for output
@@ -91,13 +92,14 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior", "all_
 
 		# Read trial data for each session
 		trial_data = pd.read_csv(Path(compiled_dir, session_id, f"{session_id}_trial.csv"), index_col=None)
-		GP_trial_data = trial_data[trial_data.task_type == 1].reset_index()
+		GP_trial_data = trial_data[trial_data.task_type == 1].reset_index(drop=True)
 
-		if "eq_prior" in _TRIALS:
-			GP_trial_data = GP_trial_data[GP_trial_data.prob_toRF == 50].reset_index()
+		block_switch = np.where((GP_trial_data.prob_toRF != 50) & ~np.isnan(GP_trial_data.prob_toRF))[0][0] 
 		if "uneq_prior" in _TRIALS:
-			GP_trial_data = GP_trial_data[GP_trial_data.prob_toRF != 50].reset_index()
-
+			GP_trial_data = GP_trial_data[block_switch:].reset_index(drop=True)
+		elif "eq_prior" in _TRIALS:
+			GP_trial_data = GP_trial_data[:block_switch].reset_index(drop=True)
+		
 		# Fill missing values for important columns
 		GP_trial_data['choice'] = GP_trial_data.choice.fillna(-1)
 		GP_trial_data['target'] = GP_trial_data.target.fillna(-1)
@@ -169,7 +171,9 @@ for _TRIALS in ["all_trials", "all_trials_no_bias", "all_trials_eq_prior", "all_
 
 
 	# session-wise fitting with 5 fold cross-validation
-	models_session_state_fold, train_ll_session, test_ll_session = session_wise_fit_cv(choices_session_wise, inputs_session_wise, masks=masks_session_wise, n_sessions=len((session_metadata["session_id"])), init_params=init_params, state_range=np.arange(1, 6), n_iters=1000)
+	models_session_state_fold, train_ll_session, test_ll_session = session_wise_fit_cv(
+		choices_session_wise, inputs_session_wise, masks=masks_session_wise, n_sessions=len((session_metadata["session_id"])), init_params=init_params, state_range=np.arange(1, 6), n_iters=1000
+	)
 
 
 	# store data and models for aggregated
