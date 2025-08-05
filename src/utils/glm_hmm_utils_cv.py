@@ -1,8 +1,8 @@
 import numpy as np
 import numpy.random as npr
 import ssm
-from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
+from sklearn.model_selection import KFold
 from tqdm import tqdm
 
 
@@ -36,7 +36,7 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 	"""
 	Optimized version of session-wise GLM-HMM fitting with k-fold cross-validation using parallelization.
 	"""
-	
+
 	masks = [np.ones_like(arr) for arr in observations] if masks is None else masks
 	assert len(observations) == n_sessions, "Observations are not compatible with number of sessions!"
 	assert len(inputs) == n_sessions, "Inputs are not compatible with number of sessions!"
@@ -60,22 +60,22 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 		test_inputs = [inputs[idx_session][test] for test in test_idx]
 
 		# Fit the model on the training data
-		train_elbo = glm_hmm.fit(train_obs, inputs=train_inputs, masks=train_masks, method=fitting_method, num_iters=n_iters, initialize=False, tolerance=tolerance)
+		joint_prob = glm_hmm.fit(train_obs, inputs=train_inputs, masks=train_masks, method=fitting_method, num_iters=n_iters, initialize=False, tolerance=tolerance)
 		# return the elbo/log-posterior in progress
 		test_ll = glm_hmm.log_likelihood(test_obs, inputs=test_inputs, masks=test_masks)
-		train_ll = glm_hmm.log_likelihood(train_obs, inputs=train_inputs, masks=train_masks) 
+		train_ll = glm_hmm.log_likelihood(train_obs, inputs=train_inputs, masks=train_masks)
 		return glm_hmm, train_ll, test_ll
 
 	def process_session_state_fold(idx_session, n_states):
 		"""
 		Fit a GLM-HMM for a specific session and state with cross-validation.
 		"""
-		
+
 		# Collecting results across all folds
 		results = Parallel(n_jobs=n_jobs)(delayed(fit_model_on_fold)(idx_split, idx_session) for idx_split in np.arange(k_folds))
 		# Unzip results and ensure consistent shape for log-likelihoods
-		models, train_lls, test_lls = zip(*results)		
-		
+		models, train_lls, test_lls = zip(*results)
+
 		# Convert train_lls and test_lls into lists of lists to handle varying lengths
 		train_ll_list = [ll for ll in train_lls]  # List of lists for train log-likelihoods
 		test_ll_list = [ll for ll in test_lls]  # List of lists for test log-likelihoods
@@ -96,7 +96,7 @@ def session_wise_fit_cv(observations, inputs, masks, n_sessions, init_params, k_
 			print(f"Fitting {n_states} states...")
 			models, train_lls, test_lls = process_session_state_fold(idx_session, n_states)
 			models_session_state_fold[idx_session][n_states] = models
-			
+
 			# Convert the list of log-likelihoods to arrays
 			train_ll[idx_session, state_idx, :] = train_lls
 			test_ll[idx_session, state_idx, :] = test_lls
