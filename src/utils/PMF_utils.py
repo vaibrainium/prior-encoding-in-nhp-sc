@@ -46,7 +46,7 @@ class PsychometricFunction(BaseEstimator, RegressorMixin):
 
     def logit_4(self, x, mean, var, lapse_rate, guess_rate):
         """Logistic function with lapse and guess rates."""
-        return lapse_rate + ((1 - guess_rate - lapse_rate) / (1 + np.exp(-var * (x - mean))))
+        return guess_rate + ((1 - guess_rate - lapse_rate) / (1 + np.exp(-var * (x - mean))))
 
     def fit(self, x, y, trial_counts=None):
         """Fit the psychometric function to data, incorporating trial counts as weights."""

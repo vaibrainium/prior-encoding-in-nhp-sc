@@ -1,22 +1,24 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import sys, os
+import copy
+import os
+import pickle
+import sys
 from pathlib import Path
+
 import numpy as np
 import numpy.random as npr
 import pandas as pd
 from sklearn import preprocessing
-import pickle
-import copy
 
 # Set up project root and import project-specific modules
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
 	sys.path.insert(0, PROJECT_ROOT)
 
-from notebooks.imports import *
 from config import dir_config, main_config
+from notebooks.imports import *
 from src.utils.glm_hmm_utils import *
 from src.utils.glm_hmm_utils_cv import *
 
@@ -66,8 +68,7 @@ def prepare_input_data(data, input_dim, valid_idx, first_trial):
 	return list(X)
 
 # --- Main Logic ---
-
-for _TRIALS in ["all_trials", "all_trials_eq_prior", "all_trials_uneq_prior", "all_trials_no_bias"]:
+for _TRIALS in ["masked", "masked_eq_prior_only", "masked_uneq_prior_only", "masked_no_bias_only"]:
 	n_states = 2  # number of discrete states
 	obs_dim = 1  # number of observed dimensions: choice(toRF/awayRF)
 	num_categories = 2  # number of categories for output
@@ -94,12 +95,12 @@ for _TRIALS in ["all_trials", "all_trials_eq_prior", "all_trials_uneq_prior", "a
 		trial_data = pd.read_csv(Path(compiled_dir, session_id, f"{session_id}_trial.csv"), index_col=None)
 		GP_trial_data = trial_data[trial_data.task_type == 1].reset_index(drop=True)
 
-		block_switch = np.where((GP_trial_data.prob_toRF != 50) & ~np.isnan(GP_trial_data.prob_toRF))[0][0] 
-		if "uneq_prior" in _TRIALS:
+		block_switch = np.where((GP_trial_data.prob_toRF != 50) & ~np.isnan(GP_trial_data.prob_toRF))[0][0]
+		if "uneq_prior_only" in _TRIALS:
 			GP_trial_data = GP_trial_data[block_switch:].reset_index(drop=True)
-		elif "eq_prior" in _TRIALS:
+		elif "eq_prior_only" in _TRIALS:
 			GP_trial_data = GP_trial_data[:block_switch].reset_index(drop=True)
-		
+
 		# Fill missing values for important columns
 		GP_trial_data['choice'] = GP_trial_data.choice.fillna(-1)
 		GP_trial_data['target'] = GP_trial_data.target.fillna(-1)
@@ -118,17 +119,17 @@ for _TRIALS in ["all_trials", "all_trials_eq_prior", "all_trials_uneq_prior", "a
 		# Adjust invalid_idx and prepare mask
 		invalid_idx = np.where(choices == -1)[0]
 
-		if "all_trials" in _TRIALS:
-			# For training, replace -1 with a random sample from 0,1			
+		if "masked" in _TRIALS:
+			# For training, replace -1 with a random sample from 0,1
 			choices[choices == -1] = np.random.choice(2, invalid_idx.shape[0])
-			
+
 			mask = np.ones_like(choices, dtype=bool)
 			mask[invalid_idx] = 0
 			# Get trial numbers and prob_toRF for the cropped session
 			GP_trial_num = np.array(GP_trial_data.trial_number)[first_trial:]
 			prob_toRF = np.array(GP_trial_data.prob_toRF)[first_trial:]
 		else:
-			assert "all_trials" in _TRIALS, "Invalid trials option"
+			assert "masked" in _TRIALS, "Invalid trials option"
 
 		# Check prior_direction for the current session and adjust inputs and choices
 		prior_direction = prior_direction_map.get(session_id, 'awayRF')
@@ -211,5 +212,5 @@ for _TRIALS in ["all_trials", "all_trials_eq_prior", "all_trials_uneq_prior", "a
 		"data": session_data,
 	}
 
-	with open(Path(processed_dir, f"global_glm_hmm_{_TRIALS}.pkl"), "wb") as f:
+	with open(Path(processed_dir, f"glm_hmm_{_TRIALS}.pkl"), "wb") as f:
 		pickle.dump(models_and_data, f)
