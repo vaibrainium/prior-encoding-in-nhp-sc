@@ -1,23 +1,13 @@
 class plot_utils:
-	from .plotting import (
-		figure_by_height,
-		figure_by_width,
-		figure_with_cbar_by_height,
-		grid_by_height,
-		grid_by_width,
-		plot_scatter,
-		plot_line,
-		plot_errorbar,
-		plot_x_errorbar,
-	)
+	from .plotting import (figure_by_height, figure_by_width,
+	                       figure_with_cbar_by_height, grid_by_height,
+	                       grid_by_width, plot_errorbar, plot_line, plot_scatter,
+	                       plot_x_errorbar)
 
 
 class pmf_utils:
-	from .pmf_utils import (
-		fit_psychometric_function,
-		get_psychometric_data,
-		get_chronometric_data,
-	)
+	from .pmf_utils import (fit_psychometric_function, get_chronometric_data,
+	                        get_psychometric_data)
 
 
 # Create a limited interface for glm_hmm_utils
@@ -27,6 +17,6 @@ class glm_hmm_utils:
 
 
 class ephys_utils:
-	from .ephys_utils import get_trial_num, get_neural_data_from_trial_num
+	from .ephys_utils import get_neural_data_from_trial_num, get_trial_num
 
-__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils", "bayesian_encoding"]
+__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils"]
