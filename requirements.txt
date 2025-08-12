@@ -34,8 +34,6 @@ blackjax
 ipywidgets
 # cupy
 KDEpy
-kilosort
-spikeinterface
 plotly
 
 # Modeling packages

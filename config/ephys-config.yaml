@@ -1,13 +1,13 @@
-alignment_settings_GP: {
-    'target_onset': {
-        'start_time_ms': -200,
-        'end_time_ms': 300},
-    'stimulus_onset': {
-        'start_time_ms': -100,
-        'end_time_ms': 800},
-    'response_onset': {
-        'start_time_ms': -300,
-        'end_time_ms': 50},
-}
+alignment_settings_GP:
+  {
+    "baseline":
+      { "event": "target_onset", "start_time_ms": -300, "end_time_ms": -50 },
+    "visual":
+      { "event": "target_onset", "start_time_ms": 50, "end_time_ms": 250 },
+    "cue":
+      { "event": "stimulus_onset", "start_time_ms": -100, "end_time_ms": 800 },
+    "response":
+      { "event": "response_onset", "start_time_ms": -300, "end_time_ms": 50 },
+  }
 
 alignment_buffer: 50
