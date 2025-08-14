@@ -9,5 +9,4 @@ alignment_settings_GP:
     "response":
       { "event": "response_onset", "start_time_ms": -300, "end_time_ms": 50 },
   }
-
 alignment_buffer: 50
