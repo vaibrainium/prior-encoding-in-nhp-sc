@@ -24,6 +24,7 @@ SciencePlots
 omegaconf
 plotly
 numexpr
+matplotlib-venn
 
 # backwards compatibility
 pathlib2
