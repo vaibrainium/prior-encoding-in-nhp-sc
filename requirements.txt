@@ -24,6 +24,7 @@ SciencePlots
 omegaconf
 plotly
 numexpr
+matplotlib-venn
 
 # backwards compatibility
 pathlib2
@@ -34,8 +35,6 @@ blackjax
 ipywidgets
 # cupy
 KDEpy
-kilosort
-spikeinterface
 plotly
 
 # Modeling packages
