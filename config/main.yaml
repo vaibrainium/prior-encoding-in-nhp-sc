@@ -1,4 +1,12 @@
-rejection_criteria: {
-  mean_threshold: 4,
-  var_threshold: 0.03
-}
+rejection_criteria: { mean_threshold: 4, var_threshold: 0.03 }
+
+GLM_HMM:
+  name: "masked_no_bias_1_back_prev_choice_coherence"
+  observed_dimensions: 1
+  n_categories: 2
+  add_bias: false
+  current_trial_features: ["normalized_stimulus"]
+  prev_trial_features:
+    ["prev_choice", "prev_coherence", "prev_choice_coherence"]
+  flip_columns: ["normalized_stimulus", "prev_choice", "prev_coherence"]
+  n_trials_back: 1
