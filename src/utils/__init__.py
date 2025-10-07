@@ -19,4 +19,11 @@ class glm_hmm_utils:
 class ephys_utils:
 	from .ephys_utils import get_neural_data_from_trial_num, get_trial_num
 
-__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils"]
+class poisson_glm_utils:
+    from .poisson_glm_utils import (convolve_with_basis,
+                                    create_post_spike_history_matrix,
+                                    make_post_spike_history_basis,
+                                    make_smooth_temporal_basis,
+                                    reconstruct_kernels_from_weights)
+
+__all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils", "poisson_glm_utils"]
