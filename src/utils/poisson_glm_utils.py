@@ -18,9 +18,11 @@ warnings.filterwarnings('ignore')
 
 
 
-def make_smooth_temporal_basis(duration, bin_size=1.0, filter_type="raised_cosine", center_spacing=50, n_bases=None):
+def make_smooth_temporal_basis(duration, bin_size=1.0, filter_type="raised_cosine", center_spacing=None, n_bases=None):
     """Fast raised cosine basis function creation."""
     n_time_bins = int(np.ceil(duration / bin_size))
+
+    center_spacing = 50 if center_spacing is None else center_spacing  # Default spacing
 
     if filter_type == "raised_cosine":
         n_bases = int(np.ceil(duration / center_spacing)) + 1
@@ -93,13 +95,13 @@ def make_post_spike_history_basis(duration_uniform_ms=11, n_uniform_bases=10, du
     return basis_matrix
 
 
-def convolve_with_basis(event_matrix, filter_type, duration, n_bases=None, effect="causal"):
+def convolve_with_basis(event_matrix, filter_type, duration, center_spacing=None, effect="causal"):
     """Fast convolution with temporal basis."""
     n_timebins = event_matrix.shape[0]
     n_events = event_matrix.shape[1]
 
     # Create basis
-    basis = make_smooth_temporal_basis(duration, filter_type=filter_type)
+    basis = make_smooth_temporal_basis(duration, filter_type=filter_type, center_spacing=center_spacing)
     n_bases = basis.shape[1]
     if effect == "anti-causal":
         basis = basis[::-1, :]  # Reverse for anti-causal
@@ -116,6 +118,7 @@ def convolve_with_basis(event_matrix, filter_type, duration, n_bases=None, effec
                 conv_matrix[:, e * n_bases + j] = conv_result[-n_timebins:]
 
     return conv_matrix, basis
+
 
 def create_post_spike_history_matrix(spike_train):
     """
