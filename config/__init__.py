@@ -5,8 +5,9 @@
 # print(f"Config path: {config_path} loaded, file-exists: {config_path.is_dir()}")
 
 
-from pathlib import Path
 import json
+from pathlib import Path
+
 from omegaconf import OmegaConf
 
 
