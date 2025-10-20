@@ -10,3 +10,15 @@ GLM_HMM:
     ["prev_choice", "prev_coherence", "prev_choice_coherence"]
   flip_columns: ["normalized_stimulus", "prev_choice", "prev_coherence"]
   n_trials_back: 1
+
+colors:
+  prior_colors:
+    equal: "#000000"
+    L: "#F781BF"
+    R: "#4DAF4A"
+  block_colors:
+    equal: "#A65628"
+    unequal: "#984EA3"
+  state_colors:
+    biased: "#1f77b4"
+    unbiased: "#ff7f0e"
