@@ -98,7 +98,8 @@ class StateBasedPoissonGLMConfig:
     N_CHOICE_OPTIONS = 2  # Binary choice task
     SACCADE_EFFECT = EFFECT_ANTI_CAUSAL
     SACCADE_BASIS = BASIS_RAISED_COSINE
-    N_BIAS_STATES = 2  # Biased vs Unbiased from GLM-HMM
+    # N_BIAS_STATES = 2  # Biased vs Unbiased from GLM-HMM
+    N_BIAS_STATES = 1  # Only use equal block
 
     # Post-spike history component
     HISTORY_UNIFORM_MS = 11      # Fast refractory period
