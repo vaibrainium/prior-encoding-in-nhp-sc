@@ -92,7 +92,7 @@ class StateBasedPoissonGLMConfig:
     STIMULUS_OFFSET_BASIS = BASIS_RAISED_COSINE
 
     # Saccade/Choice component
-    SACCADE_DURATION_MS = 300
+    SACCADE_DURATION_MS = 1500
     SACCADE_SPACING_MS = 10
     SACCADE_N_BASES = int(SACCADE_DURATION_MS/SACCADE_SPACING_MS + 1)
     N_CHOICE_OPTIONS = 2  # Binary choice task
