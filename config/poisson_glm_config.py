@@ -1,122 +1,198 @@
 
+import json
+from dataclasses import dataclass, asdict
+
+@dataclass
 class PoissonGLMConfig:
-    """Configuration class for NeuroGLM model parameters."""
+    """Instance-based configuration for NeuroGLM model parameters."""
 
     # TRIAL TIMING PARAMETERS
-    # ========================================================================
-    BIN_SIZE_MS = 1.0           # Temporal resolution
-    PRE_TARGET_MS = 50          # Time before target onset
-    # BASIS FUNCTION TYPES
-    BASIS_RAISED_COSINE = "raised_cosine"
-    BASIS_BOXCAR = "boxcar"
-    # EFFECT TYPES FOR TEMPORAL KERNELS
-    EFFECT_CAUSAL = "causal"           # Forward in time
-    EFFECT_ANTI_CAUSAL = "anti-causal" # Backward in time
-    # Target onset component
-    TARGET_DURATION_MS = 200
-    TARGET_N_BASES = int(TARGET_DURATION_MS/50 + 1)
-    TARGET_EFFECT = EFFECT_CAUSAL
-    TARGET_BASIS = BASIS_RAISED_COSINE
-    # Stimulus coherence component
-    STIMULUS_DURATION_MS = 500
-    STIMULUS_N_BASES = int(STIMULUS_DURATION_MS/50 + 1)
-    N_COHERENCE_LEVELS = 7  # Based on COH_LEVELS
-    STIMULUS_EFFECT = EFFECT_CAUSAL
-    STIMULUS_BASIS = BASIS_RAISED_COSINE
-    # Saccade/Choice component
-    SACCADE_DURATION_MS = 1500
-    SACCADE_N_BASES = int(SACCADE_DURATION_MS/50 + 1)
-    N_CHOICE_OPTIONS = 2  # Binary choice task
-    SACCADE_EFFECT = EFFECT_ANTI_CAUSAL
-    SACCADE_BASIS = BASIS_RAISED_COSINE
-    # Bias state component
-    BIAS_DURATION_MS = 2000
-    BIAS_N_BASES = int(BIAS_DURATION_MS/50 + 1)
-    N_BIAS_STATES = 2  # Biased vs Unbiased from GLM-HMM
-    BIAS_EFFECT = EFFECT_ANTI_CAUSAL
-    BIAS_BASIS = BASIS_RAISED_COSINE
-    # Post-spike history component
-    HISTORY_UNIFORM_MS = 11      # Fast refractory period
-    HISTORY_NONLINEAR_MS = 265   # Slower dynamics
-    HISTORY_N_UNIFORM = 10       # Uniform bases for fast dynamics
-    HISTORY_N_NONLINEAR = 10     # Raised cosine for slower dynamics
-    # Direct feature counts
-    FEATURES_TARGET = TARGET_N_BASES
-    FEATURES_STIMULUS = STIMULUS_N_BASES * N_COHERENCE_LEVELS
-    FEATURES_SACCADE = SACCADE_N_BASES * N_CHOICE_OPTIONS
-    FEATURES_BIAS = BIAS_N_BASES * N_BIAS_STATES
-    FEATURES_HISTORY = HISTORY_N_UNIFORM + HISTORY_N_NONLINEAR
-    FEATURES_INTERCEPT = 1
+    BIN_SIZE_MS: float = 1.0
+    PRE_TARGET_MS: int = 50
+
+    # Basis types
+    BASIS_RAISED_COSINE: str = "raised_cosine"
+    BASIS_BOXCAR: str = "boxcar"
+
+    # Effects
+    EFFECT_CAUSAL: str = "causal"
+    EFFECT_ANTI_CAUSAL: str = "anti-causal"
+
+    # Target
+    TARGET_DURATION_MS: int = 200
+    TARGET_EFFECT: str = "causal"
+    TARGET_BASIS: str = "raised_cosine"
+
+    # Stimulus
+    STIMULUS_DURATION_MS: int = 500
+    N_COHERENCE_LEVELS: int = 7
+    STIMULUS_EFFECT: str = "causal"
+    STIMULUS_BASIS: str = "raised_cosine"
+
+    # Saccade
+    SACCADE_DURATION_MS: int = 1500
+    N_CHOICE_OPTIONS: int = 2
+    SACCADE_EFFECT: str = "anti-causal"
+    SACCADE_BASIS: str = "raised_cosine"
+
+    # Bias state
+    BIAS_DURATION_MS: int = 2000
+    N_BIAS_STATES: int = 2
+    BIAS_EFFECT: str = "anti-causal"
+    BIAS_BASIS: str = "raised_cosine"
+
+    # Spike history
+    HISTORY_UNIFORM_MS: int = 11
+    HISTORY_NONLINEAR_MS: int = 265
+    HISTORY_N_UNIFORM: int = 10
+    HISTORY_N_NONLINEAR: int = 10
+
+    FEATURES_INTERCEPT: int = 1
+
+    # ================================
+    # COMPUTED PROPERTIES
+    # ================================
+
+    @property
+    def TARGET_N_BASES(self):
+        return int(self.TARGET_DURATION_MS/50 + 1)
+
+    @property
+    def STIMULUS_N_BASES(self):
+        return int(self.STIMULUS_DURATION_MS/50 + 1)
+
+    @property
+    def SACCADE_N_BASES(self):
+        return int(self.SACCADE_DURATION_MS/50 + 1)
+
+    @property
+    def BIAS_N_BASES(self):
+        return int(self.BIAS_DURATION_MS/50 + 1)
+
+    @property
+    def FEATURES_TARGET(self):
+        return self.TARGET_N_BASES
+
+    @property
+    def FEATURES_STIMULUS(self):
+        return self.STIMULUS_N_BASES * self.N_COHERENCE_LEVELS
+
+    @property
+    def FEATURES_SACCADE(self):
+        return self.SACCADE_N_BASES * self.N_CHOICE_OPTIONS
+
+    @property
+    def FEATURES_BIAS(self):
+        return self.BIAS_N_BASES * self.N_BIAS_STATES
+
+    @property
+    def FEATURES_HISTORY(self):
+        return self.HISTORY_N_UNIFORM + self.HISTORY_N_NONLINEAR
+
+    def get_total_features(self):
+        return (self.FEATURES_TARGET + self.FEATURES_STIMULUS +
+                self.FEATURES_SACCADE + self.FEATURES_BIAS +
+                self.FEATURES_HISTORY + self.FEATURES_INTERCEPT)
+
+    # ================================
+    # SAVE/LOAD SUPPORT
+    # ================================
+    def to_dict(self):
+        return asdict(self)
 
     @classmethod
-    def get_total_features(cls):
-        """Calculate total number of features."""
-        return (cls.FEATURES_TARGET + cls.FEATURES_STIMULUS + cls.FEATURES_SACCADE +
-                cls.FEATURES_BIAS + cls.FEATURES_HISTORY + cls.FEATURES_INTERCEPT)
+    def from_dict(cls, d):
+        return cls(**d)
 
+    def save(self, path):
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=4)
 
-
+    @classmethod
+    def load(cls, path):
+        with open(path, "r") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+@dataclass
 class StateBasedPoissonGLMConfig:
-    """Configuration class for NeuroGLM model parameters."""
+    BIN_SIZE_MS: float = 1.0
+    PRE_TARGET_MS: int = 50
 
-    # TRIAL TIMING PARAMETERS
-    BIN_SIZE_MS = 1.0           # Temporal resolution
-    PRE_TARGET_MS = 50          # Time before target onset
-    # BASIS FUNCTION TYPES
-    BASIS_RAISED_COSINE = "raised_cosine"
-    BASIS_BOXCAR = "boxcar"
-    # EFFECT TYPES FOR TEMPORAL KERNELS
-    EFFECT_CAUSAL = "causal"           # Forward in time
-    EFFECT_ANTI_CAUSAL = "anti-causal" # Backward in time
+    BASIS_RAISED_COSINE: str = "raised_cosine"
+    BASIS_BOXCAR: str = "boxcar"
 
-    # Target onset component
-    TARGET_DURATION_MS = 200
-    TARGET_SPACING_MS = 10
-    TARGET_N_BASES = int(TARGET_DURATION_MS/TARGET_SPACING_MS + 1)
-    TARGET_EFFECT = EFFECT_CAUSAL
-    TARGET_BASIS = BASIS_RAISED_COSINE
+    EFFECT_CAUSAL: str = "causal"
+    EFFECT_ANTI_CAUSAL: str = "anti-causal"
 
-    # Stimulus coherence component
-    STIMULUS_DURATION_MS = 300
-    STIMULUS_SPACING_MS = 10
-    STIMULUS_N_BASES = int(STIMULUS_DURATION_MS/STIMULUS_SPACING_MS + 1)
-    N_COHERENCE_LEVELS = 1 #7  # Based on COH_LEVELS
-    STIMULUS_EFFECT = EFFECT_CAUSAL
-    STIMULUS_BASIS = BASIS_RAISED_COSINE
+    TARGET_DURATION_MS: int = 200
+    TARGET_SPACING_MS: int = 10
+    TARGET_EFFECT: str = "causal"
+    TARGET_BASIS: str = "raised_cosine"
 
-    # Stimulus offset component
-    STIMULUS_OFFSET_DURATION_MS = 50
-    STIMULUS_OFFSET_SPACING_MS = 10
-    STIMULUS_OFFSET_N_BASES = int(STIMULUS_OFFSET_DURATION_MS/STIMULUS_OFFSET_SPACING_MS + 1)
-    STIMULUS_OFFSET_EFFECT = EFFECT_CAUSAL
-    STIMULUS_OFFSET_BASIS = BASIS_RAISED_COSINE
+    STIMULUS_DURATION_MS: int = 300
+    STIMULUS_SPACING_MS: int = 10
+    N_COHERENCE_LEVELS: int = 1
+    STIMULUS_EFFECT: str = "causal"
+    STIMULUS_BASIS: str = "raised_cosine"
 
-    # Saccade/Choice component
-    SACCADE_DURATION_MS = 250
-    SACCADE_SPACING_MS = 10
-    SACCADE_N_BASES = int(SACCADE_DURATION_MS/SACCADE_SPACING_MS + 1)
-    N_CHOICE_OPTIONS = 2  # Binary choice task
-    SACCADE_EFFECT = EFFECT_ANTI_CAUSAL
-    SACCADE_BASIS = BASIS_RAISED_COSINE
-    # N_BIAS_STATES = 2  # Biased vs Unbiased from GLM-HMM
-    N_BIAS_STATES = 1  # Only use equal block
+    SACCADE_DURATION_MS: int = 50
+    SACCADE_SPACING_MS: int = 10
+    N_CHOICE_OPTIONS: int = 2
+    SACCADE_EFFECT: str = "anti-causal"
+    SACCADE_BASIS: str = "raised_cosine"
 
-    # Post-spike history component
-    HISTORY_UNIFORM_MS = 11      # Fast refractory period
-    HISTORY_NONLINEAR_MS = 265   # Slower dynamics
-    HISTORY_N_UNIFORM = 10       # Uniform bases for fast dynamics
-    HISTORY_N_NONLINEAR = 10     # Raised cosine for slower dynamics
+    N_BIAS_STATES: int = 1
 
-    # Direct feature counts
-    FEATURES_TARGET = TARGET_N_BASES * N_BIAS_STATES
-    FEATURES_STIMULUS = STIMULUS_N_BASES * N_COHERENCE_LEVELS * N_BIAS_STATES
-    FEATURE_STIMULUS_OFFSET = STIMULUS_OFFSET_N_BASES * N_COHERENCE_LEVELS * N_BIAS_STATES
-    FEATURES_SACCADE = SACCADE_N_BASES * N_CHOICE_OPTIONS * N_BIAS_STATES
-    FEATURES_HISTORY = HISTORY_N_UNIFORM + HISTORY_N_NONLINEAR
-    FEATURES_INTERCEPT = 1
+    HISTORY_UNIFORM_MS: int = 11
+    HISTORY_NONLINEAR_MS: int = 265
+    HISTORY_N_UNIFORM: int = 10
+    HISTORY_N_NONLINEAR: int = 10
 
+    FEATURES_INTERCEPT: int = 1
+
+    # computed properties
+    @property
+    def TARGET_N_BASES(self):
+        return int(self.TARGET_DURATION_MS / self.TARGET_SPACING_MS + 1)
+
+    @property
+    def STIMULUS_N_BASES(self):
+        return int(self.STIMULUS_DURATION_MS / self.STIMULUS_SPACING_MS + 1)
+
+    @property
+    def SACCADE_N_BASES(self):
+        return int(self.SACCADE_DURATION_MS / self.SACCADE_SPACING_MS + 1)
+
+    # feature counts
+    @property
+    def FEATURES_TARGET(self):
+        return self.TARGET_N_BASES * self.N_BIAS_STATES
+
+    @property
+    def FEATURES_STIMULUS(self):
+        return self.STIMULUS_N_BASES * self.N_COHERENCE_LEVELS * self.N_BIAS_STATES
+
+    @property
+    def FEATURES_SACCADE(self):
+        return self.SACCADE_N_BASES * self.N_CHOICE_OPTIONS * self.N_BIAS_STATES
+
+    @property
+    def FEATURES_HISTORY(self):
+        return self.HISTORY_N_UNIFORM + self.HISTORY_N_NONLINEAR
+
+    def get_total_features(self):
+        return (
+            self.FEATURES_TARGET + 
+            self.FEATURES_STIMULUS + 
+            self.FEATURES_SACCADE + 
+            self.FEATURES_HISTORY + 
+            self.FEATURES_INTERCEPT
+        )
+
+    # saving/loading
+    def to_dict(self): return asdict(self)
     @classmethod
-    def get_total_features(cls):
-        """Calculate total number of features."""
-        return (cls.FEATURES_TARGET + cls.FEATURES_STIMULUS + cls.FEATURE_STIMULUS_OFFSET + cls.FEATURES_SACCADE +
-                cls.FEATURES_HISTORY + cls.FEATURES_INTERCEPT)
+    def from_dict(cls, d): return cls(**d)
+    def save(self, path): json.dump(self.to_dict(), open(path, "w"), indent=4)
+    @classmethod
+    def load(cls, path): return cls.from_dict(json.load(open(path)))
