@@ -18,6 +18,9 @@ services:
         pip install --upgrade --force-reinstall --no-cache-dir numpy cython &&
         pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git &&
         pip install -r requirements.txt &&
+        pip uninstall -y numpy &&
+        pip install --no-cache-dir numpy &&
+        pip install --upgrade --force-reinstall cython scipy matplotlib pandas &&
         jupyter lab --ip=0.0.0.0 --no-browser --allow-root
       "
 

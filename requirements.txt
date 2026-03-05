@@ -47,3 +47,4 @@ dPCA
 torch
 torchvision
 torchaudio
+pyarrow
