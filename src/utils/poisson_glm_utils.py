@@ -16,8 +16,6 @@ from sklearn.metrics import mean_squared_error, r2_score
 
 warnings.filterwarnings('ignore')
 
-
-
 def make_smooth_temporal_basis(duration, bin_size=1.0, filter_type="raised_cosine", center_spacing=None, n_bases=None):
     """Fast raised cosine basis function creation."""
     n_time_bins = int(np.ceil(duration / bin_size))
