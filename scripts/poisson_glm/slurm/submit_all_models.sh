@@ -5,11 +5,11 @@
 #
 # Usage:
 #   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
-#       bash scripts/poisson_glm_refactored/slurm/submit_all_models.sh
+#       bash scripts/poisson_glm/slurm/submit_all_models.sh
 #
 #   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
 #   PRIOR_COND=equal_only OUTCOME_FILTER=correct_only \
-#       bash scripts/poisson_glm_refactored/slurm/submit_all_models.sh
+#       bash scripts/poisson_glm/slurm/submit_all_models.sh
 #
 #
 # Check progress with:

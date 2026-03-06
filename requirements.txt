@@ -41,7 +41,6 @@ plotly
 graphviz
 cython
 git+https://github.com/vaibrainium/ssm.git
-git+https://github.com/lnccbrown/HSSM.git
 dPCA
 # ML
 torch

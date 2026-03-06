@@ -4,34 +4,74 @@ Fit Poisson GLM with 5-fold cross-validation for a single neuron.
 Designed for HPC array job parallelization — one job per neuron.
 
 Usage:
-    python scripts/fit_neuron_cv.py --neuron_id 42
-    python scripts/fit_neuron_cv.py --neuron_id 42 --prior_cond equal_block --outcome_filter correct_only
+    python scripts/poisson_glm/fit_neuron_cv.py --neuron_id 42 --model_file 1stim_1coh_2choice_1500ms
+    python scripts/poisson_glm/fit_neuron_cv.py --neuron_id 42 --model_file 7stim_7coh_2choice_1500ms --prior_cond equal_block --outcome_filter correct_only
+
+Available model files (scripts/poisson_glm/models/):
+    0stim_2choice_1500ms
+    1stim_1coh_0choice
+    1stim_1coh_2choice_1500ms
+    1stim_7coh_0choice
+    1stim_7coh_2choice_1500ms
+    7stim_7coh_0choice
+    7stim_7coh_2choice_1500ms
 """
 
 import argparse
+import importlib.util
 import json
 import pickle
 import sys
-import time
 import warnings
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from scipy.sparse import csr_matrix, issparse, vstack
 from sklearn.model_selection import KFold
 
+warnings.filterwarnings('ignore')
+
 # --- Project root on sys.path ---
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import dir_config
 from src.utils import poisson_glm_utils
 
 
-def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_config, model_name: str):
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_model_module(model_name: str):
+    """Dynamically load a model file from the models/ subdirectory."""
+    model_file = Path(__file__).parent / "models" / f"{model_name}.py"
+    if not model_file.exists():
+        print(f"Model file not found: {model_file}", file=sys.stderr)
+        sys.exit(1)
+
+    spec = importlib.util.spec_from_file_location("model_module", model_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _split_flat_predictions(flat_preds, trials):
+    """Slice a flat prediction array back into per-trial arrays."""
+    preds, onset = [], 0
+    for t in trials.itertuples():
+        n = int(t.n_bins)
+        preds.append(flat_preds[onset:onset + n])
+        onset += n
+    return preds
+
+
+# ---------------------------------------------------------------------------
+# Main CV loop
+# ---------------------------------------------------------------------------
+
+def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_config, model_name: str,
+           build_design_matrix, get_feature_idx):
 
     feature_idx = get_feature_idx(poisson_glm_config)
 
@@ -69,20 +109,12 @@ def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_con
         model_result = poisson_glm_utils.fit_poisson_glm(X_train, y_train)
         if model_result is None:
             print(f"[neuron {neuron_id}] Fold {fold + 1}/5 — fit failed, aborting neuron.")
-            break
+            return
 
-        train_preds, onset = [], 0
-        for t in train_trials.itertuples():
-            n = int(t.n_bins)
-            train_preds.append(model_result['predicted_y'][onset:onset + n])
-            onset += n
+        train_preds = _split_flat_predictions(model_result['predicted_y'], train_trials)
 
         test_flat_pred = poisson_glm_utils.predict_poisson_glm(X_test, model_result)
-        test_preds, onset = [], 0
-        for t in test_trials.itertuples():
-            n = int(t.n_bins)
-            test_preds.append(test_flat_pred[onset:onset + n])
-            onset += n
+        test_preds = _split_flat_predictions(test_flat_pred, test_trials)
 
         fitting_result['folds'].append({
             'fold': fold,
@@ -93,34 +125,40 @@ def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_con
             'test_predictions': test_preds,
         })
 
-    with open(output_path, 'wb') as f:
+    if len(fitting_result['folds']) < 5:
+        print(f"[neuron {neuron_id}] Only {len(fitting_result['folds'])}/5 folds completed — not saving.", file=sys.stderr)
+        return
+
+    # Write atomically: temp file → rename, so a partial write is never mistaken for success
+    tmp_path = output_path.with_suffix('.tmp')
+    with open(tmp_path, 'wb') as f:
         pickle.dump(fitting_result, f)
+    tmp_path.rename(output_path)
+    print(f"[neuron {neuron_id}] Saved to {output_path}")
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Fit Poisson GLM CV for one neuron.')
     parser.add_argument('--neuron_id', type=int, required=True, help='Neuron ID to process')
     parser.add_argument('--prior_cond', type=str, default='equal_block', help='Prior condition (default: equal_block)')
     parser.add_argument('--outcome_filter', type=str, default='correct_only', help='Outcome filter (default: correct_only)')
-    parser.add_argument('--model_file', type=str, required=True, help='Path to model python file)')
+    parser.add_argument('--model_file', type=str, required=True, help='Model name (stem of a file in models/)')
     args = parser.parse_args()
 
-    # load model functions from specified model file in scripts/poisson_glm/*.py
-    model_name = args.model_file
-    model_file_path = Path("scripts", "poisson_glm", f"{model_name}.py")
-    if not model_file_path.exists():
-        print(f"Model file not found: {model_file_path}", file=sys.stderr)
-        sys.exit(1)
+    model_module = _load_model_module(args.model_file)
 
-    # get build_design_matrix, get_feature_idx, and StateBasedPoissonGLMConfig from the model file
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("model_module", model_file_path)
-    model_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(model_module)
-    build_design_matrix = model_module.build_design_matrix
-    get_feature_idx = model_module.get_feature_idx
-    StateBasedPoissonGLMConfig = model_module.StateBasedPoissonGLMConfig
+    poisson_glm_config = model_module.StateBasedPoissonGLMConfig()
 
-    poisson_glm_config = StateBasedPoissonGLMConfig()
-    run_cv(args.neuron_id, args.prior_cond, args.outcome_filter, poisson_glm_config=poisson_glm_config, model_name=model_name)
+    run_cv(
+        neuron_id=args.neuron_id,
+        prior_cond=args.prior_cond,
+        outcome_filter=args.outcome_filter,
+        poisson_glm_config=poisson_glm_config,
+        model_name=args.model_file,
+        build_design_matrix=model_module.build_design_matrix,
+        get_feature_idx=model_module.get_feature_idx,
+    )

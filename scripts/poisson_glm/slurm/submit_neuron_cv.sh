@@ -3,16 +3,16 @@
 #
 # Usage:
 #   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
-#       bash scripts/poisson_glm_refactored/slurm/submit_neuron_cv.sh
+#       bash scripts/poisson_glm/slurm/submit_neuron_cv.sh
 #
 #   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
 #   PRIOR_COND=equal_only OUTCOME_FILTER=correct_only MODEL_FILE=7stim_7coh_2choice_1500ms \
-#       bash scripts/poisson_glm_refactored/slurm/submit_neuron_cv.sh
+#       bash scripts/poisson_glm/slurm/submit_neuron_cv.sh
 #
 # The script auto-detects the number of neurons from the data directory
 # and submits a SLURM array job sized accordingly.
 #
-# Available MODEL_FILE values (scripts/poisson_glm_refactored/models/):
+# Available MODEL_FILE values (scripts/poisson_glm/models/):
 #   0stim_2choice_1500ms  1stim_1coh_2choice_1500ms 1stim_1coh_0choice
 #   1stim_7coh_0choice    1stim_7coh_2choice_1500ms
 #   7stim_7coh_0choice    7stim_7coh_2choice_1500ms
@@ -31,7 +31,7 @@ if [[ -z "${SIF_FILE}" ]]; then
     exit 1
 fi
 
-# script lives at <project_root>/scripts/poisson_glm_refactored/slurm/
+# script lives at <project_root>/scripts/poisson_glm/slurm/
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DATA_ROOT="/gscratch/walkerlab/vaibhav/nhp-prior-data"
 DATA_DIR="${DATA_ROOT}/processed/poisson_glm/data/prior_cond_${PRIOR_COND}_outcome_${OUTCOME_FILTER}"
@@ -92,7 +92,7 @@ sbatch ${SBATCH_EXTRA} <<EOF
     singularity exec --writable-tmpfs --nv \
         --bind "${DATA_ROOT}":"${DATA_ROOT}","${PROJECT_ROOT}":"${PROJECT_ROOT}" \
         "${SIF_FILE}" \
-        /usr/bin/python3 "${PROJECT_ROOT}/scripts/poisson_glm_refactored/fit_neuron_cv.py" \
+        /usr/bin/python3 "${PROJECT_ROOT}/scripts/poisson_glm/fit_neuron_cv.py" \
             --neuron_id "\${NEURON_ID}" \
             --prior_cond "${PRIOR_COND}" \
             --outcome_filter "${OUTCOME_FILTER}" \
