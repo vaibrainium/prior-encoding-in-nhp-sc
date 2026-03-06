@@ -2,8 +2,8 @@
 # Submit one SLURM array job per neuron parquet file.
 #
 # Usage:
-#   bash scripts/submit_neuron_cv.sh
-#   PRIOR_COND=equal_block OUTCOME_FILTER=correct_only bash scripts/submit_neuron_cv.sh
+#   bash scripts/poisson_glm/submit_neuron_cv.sh
+#   PRIOR_COND=equal_block OUTCOME_FILTER=correct_only bash scripts/poisson_glm/submit_neuron_cv.sh
 #
 # The script auto-detects the number of neurons from the data directory
 # and submits a SLURM array job sized accordingly.
@@ -60,7 +60,7 @@ echo "Array task \${SLURM_ARRAY_TASK_ID} → neuron \${NEURON_ID}"
 
 cd "${PROJECT_ROOT}"
 
-python scripts/fit_neuron_cv.py \
+python scripts/poisson_glm/fit_neuron_cv.py \
     --neuron_id "\${NEURON_ID}" \
     --prior_cond "${PRIOR_COND}" \
     --outcome_filter "${OUTCOME_FILTER}"

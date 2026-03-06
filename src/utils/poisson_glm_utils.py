@@ -1,4 +1,3 @@
-
 import pickle
 import time
 import warnings
@@ -324,3 +323,59 @@ def reconstruct_kernels_from_weights(weights, config):
     }
 
     return kernels
+
+
+def fit_poisson_glm(X, y):
+    if issparse(X):
+        X = X.toarray()
+
+    X_means = X.mean(axis=0)
+    X_stds = X.std(axis=0)
+    X_stds[X_stds < 1e-8] = 1.0
+
+    X_scaled = X.copy()
+    X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
+
+    def loss_fun(w):
+        eta = X_scaled @ w
+        if np.any(y[eta < -15] > 0):
+            return 1e20
+        eta = np.clip(eta, -15, 15)
+        mu = np.exp(eta)
+        return np.sum(mu) - np.dot(y, eta) + 0.1 * np.dot(w, w)
+
+    def grad_fun(w):
+        eta = np.clip(X_scaled @ w, -15, 15)
+        mu = np.exp(eta)
+        return X_scaled.T @ (mu - y) + 0.02 * w
+
+    w_init = np.zeros(X_scaled.shape[1])
+    w_init[-1] = np.log(max(y.mean(), 1e-8))
+
+    result = minimize(
+        fun=loss_fun,
+        x0=w_init,
+        method='L-BFGS-B',
+        jac=grad_fun,
+        options={'maxiter': 1000, 'gtol': 1e-3, 'ftol': 1e-5, 'maxfun': 200},
+    )
+
+    if result.success or result.fun < 1e6:
+        eta = X_scaled @ result.x
+        result['predicted_y'] = np.exp(np.clip(eta, -15, 15))
+    else:
+        print(f"  Optimization failed: {result.message}")
+        return None
+
+    return result
+
+
+def predict_poisson_glm(X, model):
+    if issparse(X):
+        X = X.toarray()
+    X_means = X.mean(axis=0)
+    X_stds = X.std(axis=0)
+    X_stds[X_stds < 1e-8] = 1.0
+    X_scaled = X.copy()
+    X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
+    return np.exp(np.clip(X_scaled @ model.x, -15, 15))
