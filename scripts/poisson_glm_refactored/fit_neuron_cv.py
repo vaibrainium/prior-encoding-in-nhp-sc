@@ -109,7 +109,7 @@ def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_con
         model_result = poisson_glm_utils.fit_poisson_glm(X_train, y_train)
         if model_result is None:
             print(f"[neuron {neuron_id}] Fold {fold + 1}/5 — fit failed, aborting neuron.")
-            break
+            return
 
         train_preds = _split_flat_predictions(model_result['predicted_y'], train_trials)
 
@@ -125,8 +125,16 @@ def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_con
             'test_predictions': test_preds,
         })
 
-    with open(output_path, 'wb') as f:
+    if len(fitting_result['folds']) < 5:
+        print(f"[neuron {neuron_id}] Only {len(fitting_result['folds'])}/5 folds completed — not saving.", file=sys.stderr)
+        return
+
+    # Write atomically: temp file → rename, so a partial write is never mistaken for success
+    tmp_path = output_path.with_suffix('.tmp')
+    with open(tmp_path, 'wb') as f:
         pickle.dump(fitting_result, f)
+    tmp_path.rename(output_path)
+    print(f"[neuron {neuron_id}] Saved to {output_path}")
 
 
 # ---------------------------------------------------------------------------

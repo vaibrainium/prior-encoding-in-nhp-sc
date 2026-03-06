@@ -9,7 +9,6 @@ aliases the correct build_design_matrix variant to match its encoding scheme.
 import json
 import sys
 import warnings
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -120,9 +119,24 @@ class StateBasedPoissonGLMConfig:
 
     # --- Serialisation ---
 
-    def to_dict(self): return asdict(self)
+    def to_dict(self):
+        # Collect only plain (non-callable, non-property, non-descriptor) class-level attrs
+        cls_attrs = {
+            k: v for k, v in vars(self.__class__).items()
+            if not k.startswith('_')
+            and not callable(v)
+            and not isinstance(v, (property, classmethod, staticmethod))
+        }
+        # Instance-level overrides take precedence
+        return {**cls_attrs, **vars(self)}
+
     @classmethod
-    def from_dict(cls, d): return cls(**d)
+    def from_dict(cls, d):
+        obj = cls()
+        for k, v in d.items():
+            setattr(obj, k, v)
+        return obj
+
     def save(self, path): json.dump(self.to_dict(), open(path, "w"), indent=4)
     @classmethod
     def load(cls, path): return cls.from_dict(json.load(open(path)))
@@ -181,7 +195,7 @@ def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
     # 2. STIMULUS COHERENCE
     stim_bin = int(trial.stimulus_onset)
     resp_bin = int(trial.response_onset)
-    if 0 < stim_bin < resp_bin <= trial_duration:
+    if config.STIMULUS_DURATION_MS > 0 and 0 < stim_bin < resp_bin <= trial_duration:
         stim_matrix = np.zeros((trial_duration, 1))
         stim_matrix[stim_bin - 1:resp_bin] = stim_value
         stim_conv, _ = poisson_glm_utils.convolve_with_basis(
@@ -191,14 +205,14 @@ def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
             config.STIMULUS_SPACING_MS,
             effect=config.STIMULUS_EFFECT,
         )
-        coh_idx = 0 if config.N_COHERENCE_LEVELS == 1 else int(np.where(coh_levels == trial.coherence)[0][0])
+        coh_idx = 0 if config.N_COHERENCE_LEVELS == 1 else int(np.where(coh_levels == trial.coherence / 100)[0][0])
         state_idx = int(trial.state)
         coh_start = feature_idx['stim_start'] + coh_idx * config.STIMULUS_N_BASES + state_idx * config.STIMULUS_N_BASES * len(coh_levels)
         coh_end = coh_start + config.STIMULUS_N_BASES
         trial_design[:, coh_start:coh_end] = stim_conv
 
     # 3. SACCADE / CHOICE
-    if 0 < resp_bin <= trial_duration:
+    if config.SACCADE_DURATION_MS > 0 and 0 < resp_bin <= trial_duration:
         saccade_matrix = np.zeros((trial_duration, 1))
         saccade_matrix[resp_bin - 1] = 1.0
         saccade_conv, _ = poisson_glm_utils.convolve_with_basis(
