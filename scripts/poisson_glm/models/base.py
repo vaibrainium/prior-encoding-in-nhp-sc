@@ -120,15 +120,18 @@ class StateBasedPoissonGLMConfig:
     # --- Serialisation ---
 
     def to_dict(self):
-        # Collect only plain (non-callable, non-property, non-descriptor) class-level attrs
-        cls_attrs = {
-            k: v for k, v in vars(self.__class__).items()
-            if not k.startswith('_')
-            and not callable(v)
-            and not isinstance(v, (property, classmethod, staticmethod))
-        }
+        # Walk the full MRO (reversed so subclass attrs override base attrs)
+        # to capture every plain parameter across the whole class hierarchy.
+        d = {}
+        for klass in reversed(type(self).__mro__):
+            for k, v in vars(klass).items():
+                if (not k.startswith('_')
+                        and not callable(v)
+                        and not isinstance(v, (property, classmethod, staticmethod))):
+                    d[k] = v
         # Instance-level overrides take precedence
-        return {**cls_attrs, **vars(self)}
+        d.update(vars(self))
+        return d
 
     @classmethod
     def from_dict(cls, d):
@@ -160,6 +163,12 @@ def get_feature_idx(config):
         'intercept_idx': config.get_total_features() - 1,
     }
 
+# ---------------------------------------------------------------------------
+# Load config from JSON
+# ---------------------------------------------------------------------------
+def load_config(path) -> StateBasedPoissonGLMConfig:
+    """Load a config.json and return a StateBasedPoissonGLMConfig instance."""
+    return StateBasedPoissonGLMConfig.load(path)
 
 # ---------------------------------------------------------------------------
 # Design-matrix builders
