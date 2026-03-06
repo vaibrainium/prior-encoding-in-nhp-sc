@@ -2,10 +2,10 @@
 # Submit one SLURM array job per neuron parquet file.
 #
 # Usage:
-#   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
+#   SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif \
 #       bash scripts/poisson_glm/slurm/submit_neuron_cv.sh
 #
-#   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
+#   SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif \
 #   PRIOR_COND=equal_only OUTCOME_FILTER=correct_only MODEL_FILE=7stim_7coh_2choice_1500ms \
 #       bash scripts/poisson_glm/slurm/submit_neuron_cv.sh
 #
@@ -27,7 +27,7 @@ SBATCH_EXTRA="${SBATCH_EXTRA:-}"
 
 if [[ -z "${SIF_FILE}" ]]; then
     echo "Error: SIF_FILE must be set. Example:" >&2
-    echo "  SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif bash $0" >&2
+    echo "  SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif bash $0" >&2
     exit 1
 fi
 
