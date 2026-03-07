@@ -50,7 +50,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from config import dir_config
 from src.utils import poisson_glm_utils
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
