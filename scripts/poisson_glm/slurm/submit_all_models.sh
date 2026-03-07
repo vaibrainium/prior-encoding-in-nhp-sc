@@ -4,10 +4,10 @@
 # a chain where each model waits for the previous one to finish.
 #
 # Usage:
-#   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
+#   SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif \
 #       bash scripts/poisson_glm/slurm/submit_all_models.sh
 #
-#   SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif \
+#   SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif \
 #   PRIOR_COND=equal_only OUTCOME_FILTER=correct_only \
 #       bash scripts/poisson_glm/slurm/submit_all_models.sh
 #
@@ -24,7 +24,7 @@ OUTCOME_FILTER="${OUTCOME_FILTER:-correct_only}"
 
 if [[ -z "${SIF_FILE}" ]]; then
     echo "Error: SIF_FILE must be set. Example:" >&2
-    echo "  SIF_FILE=/gscratch/walkerlab/vaibhav/prior-encoding-in-nhp.sif bash $0" >&2
+    echo "  SIF_FILE=/gscratch/walkerlab/vaibhav/apptainer_files/prior-encoding-in-nhp.sif bash $0" >&2
     exit 1
 fi
 
