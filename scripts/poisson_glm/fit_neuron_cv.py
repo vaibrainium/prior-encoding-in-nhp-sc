@@ -93,7 +93,7 @@ def run_cv(neuron_id: int, prior_cond: str, outcome_filter: str, poisson_glm_con
         sys.exit(1)
 
     df = pd.read_parquet(fpath)
-    coh_levels = np.sort(df['coherence'].unique() / 100)
+    coh_levels = np.sort(df['coherence'].unique())
 
     kf = KFold(n_splits=5, shuffle=True, random_state=216)
     fitting_result = {'coh_levels': coh_levels, 'folds': []}

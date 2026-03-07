@@ -226,7 +226,7 @@ def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
             config.STIMULUS_SPACING_MS,
             effect=config.STIMULUS_EFFECT,
         )
-        coh_idx = 0 if config.N_COHERENCE_LEVELS == 1 else int(np.where(coh_levels == trial.coherence / 100)[0][0])
+        coh_idx = 0 if config.N_COHERENCE_LEVELS == 1 else int(np.where(coh_levels == trial.coherence)[0][0])
         state_idx = int(trial.state)
         coh_start = feature_idx['stim_start'] + coh_idx * config.STIMULUS_N_BASES + state_idx * config.STIMULUS_N_BASES * len(coh_levels)
         coh_end = coh_start + config.STIMULUS_N_BASES
