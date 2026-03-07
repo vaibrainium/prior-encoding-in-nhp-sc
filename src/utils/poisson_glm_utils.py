@@ -363,6 +363,8 @@ def fit_poisson_glm(X, y):
     if result.success or result.fun < 1e6:
         eta = X_scaled @ result.x
         result['predicted_y'] = np.exp(np.clip(eta, -15, 15))
+        result['X_means'] = X_means
+        result['X_stds'] = X_stds
     else:
         print(f"  Optimization failed: {result.message}")
         return None
@@ -373,9 +375,8 @@ def fit_poisson_glm(X, y):
 def predict_poisson_glm(X, model):
     if issparse(X):
         X = X.toarray()
-    X_means = X.mean(axis=0)
-    X_stds = X.std(axis=0)
-    X_stds[X_stds < 1e-8] = 1.0
+    X_means = model['X_means']
+    X_stds = model['X_stds']
     X_scaled = X.copy()
     X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
     return np.exp(np.clip(X_scaled @ model.x, -15, 15))
