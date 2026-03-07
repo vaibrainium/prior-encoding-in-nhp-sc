@@ -336,18 +336,27 @@ def fit_poisson_glm(X, y):
     X_scaled = X.copy()
     X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
 
+    # Ridge penalty applied in physical (un-scaled) space:
+    #   physical weight k_j = w_j / σ_j  →  penalty = λ * Σ (w_j/σ_j)²
+    # Intercept (last column) is excluded from regularization.
+    lam = 0.1
+    inv_stds_sq = 1.0 / X_stds[:-1] ** 2  # shape (F-1,)
+
     def loss_fun(w):
         eta = X_scaled @ w
         if np.any(y[eta < -15] > 0):
             return 1e20
         eta = np.clip(eta, -15, 15)
         mu = np.exp(eta)
-        return np.sum(mu) - np.dot(y, eta) + 0.1 * np.dot(w, w)
+        ridge = lam * np.dot(w[:-1] ** 2, inv_stds_sq)
+        return np.sum(mu) - np.dot(y, eta) + ridge
 
     def grad_fun(w):
         eta = np.clip(X_scaled @ w, -15, 15)
         mu = np.exp(eta)
-        return X_scaled.T @ (mu - y) + 0.02 * w
+        g = X_scaled.T @ (mu - y)
+        g[:-1] += 2.0 * lam * w[:-1] * inv_stds_sq
+        return g
 
     w_init = np.zeros(X_scaled.shape[1])
     w_init[-1] = np.log(max(y.mean(), 1e-8))
@@ -365,6 +374,12 @@ def fit_poisson_glm(X, y):
         result['predicted_y'] = np.exp(np.clip(eta, -15, 15))
         result['X_means'] = X_means
         result['X_stds'] = X_stds
+        # Physical (un-scaled) weights for kernel visualisation:
+        #   log λ = Σ k_j * x_j + b_physical
+        #   k_j = w_j / σ_j,  b = w_intercept - Σ k_j * μ_j
+        k = result.x[:-1] / X_stds[:-1]
+        b = result.x[-1] - np.dot(k, X_means[:-1])
+        result['w_physical'] = np.append(k, b)
     else:
         print(f"  Optimization failed: {result.message}")
         return None
