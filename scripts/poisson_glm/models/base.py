@@ -21,7 +21,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils import poisson_glm_utils
 
-
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -31,9 +30,9 @@ class StateBasedPoissonGLMConfig:
     Base configuration for all state-based Poisson GLM variants.
 
     Subclass and override only the parameters that differ from the defaults:
-        N_COHERENCE_LEVELS  – number of coherence bins (1 = pooled, 7 = separate)
-        STIMULUS_DURATION_MS – 0 disables the stimulus feature block
-        SACCADE_DURATION_MS  – 0 disables the saccade/choice feature block
+        N_COHERENCE_LEVELS - number of coherence bins (1 = pooled, 7 = separate)
+        STIMULUS_DURATION_MS - 0 disables the stimulus feature block
+        SACCADE_DURATION_MS  - 0 disables the saccade/choice feature block
     """
 
     BIN_SIZE_MS: float = 1.0
@@ -53,7 +52,7 @@ class StateBasedPoissonGLMConfig:
 
     # --- Stimulus coherence ---
     N_COHERENCE_LEVELS: int = 1
-    STIMULUS_DURATION_MS: int = 300
+    STIMULUS_DURATION_MS: int = 1500 # use 95% percentile of reaction time
     STIMULUS_SPACING_MS: int = 10
     STIMULUS_EFFECT: str = "causal"
     STIMULUS_BASIS: str = "raised_cosine"
@@ -75,6 +74,12 @@ class StateBasedPoissonGLMConfig:
     HISTORY_N_NONLINEAR: int = 10
 
     FEATURES_INTERCEPT: int = 1
+
+    # --- Optional scalar covariates ---
+    INCLUDE_LOG_RT: bool = False  # log(RT) scalar covariate, constant within trial
+
+    # --- Optional stimulus ramp ---
+    STIMULUS_RAMP: bool = False   # replace sustained boxcar with elapsed-time ramp
 
     # --- Derived basis counts ---
 
@@ -108,12 +113,17 @@ class StateBasedPoissonGLMConfig:
     def FEATURES_HISTORY(self):
         return self.HISTORY_N_UNIFORM + self.HISTORY_N_NONLINEAR
 
+    @property
+    def FEATURES_LOG_RT(self):
+        return 1 if self.INCLUDE_LOG_RT else 0
+
     def get_total_features(self):
         return (
             self.FEATURES_TARGET
             + self.FEATURES_STIMULUS
             + self.FEATURES_SACCADE
             + self.FEATURES_HISTORY
+            + self.FEATURES_LOG_RT
             + self.FEATURES_INTERCEPT
         )
 
@@ -148,6 +158,12 @@ class StateBasedPoissonGLMConfig:
 
 def get_feature_idx(config):
     """Return a dict mapping feature-block names to column indices."""
+    history_end = (
+        config.FEATURES_TARGET
+        + config.FEATURES_STIMULUS
+        + config.FEATURES_SACCADE
+        + config.FEATURES_HISTORY
+    )
     return {
         'target_start':  0,
         'target_end':    config.FEATURES_TARGET,
@@ -156,7 +172,8 @@ def get_feature_idx(config):
         'saccade_start': config.FEATURES_TARGET + config.FEATURES_STIMULUS,
         'saccade_end':   config.FEATURES_TARGET + config.FEATURES_STIMULUS + config.FEATURES_SACCADE,
         'history_start': config.FEATURES_TARGET + config.FEATURES_STIMULUS + config.FEATURES_SACCADE,
-        'history_end':   config.FEATURES_TARGET + config.FEATURES_STIMULUS + config.FEATURES_SACCADE + config.FEATURES_HISTORY,
+        'history_end':   history_end,
+        'log_rt_idx':    history_end if config.INCLUDE_LOG_RT else None,
         'intercept_idx': config.get_total_features() - 1,
     }
 
@@ -167,11 +184,11 @@ def get_feature_idx(config):
 
 def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
     """
-    Construct the (T × F) design matrix for one trial.
+    Construct the (T x F) design matrix for one trial.
 
     stim_value controls how the stimulus period is filled:
-        1.0           – binary / categorical encoding
-        trial.coherence – continuous coherence-scaled encoding
+        1.0           - binary / categorical encoding
+        trial.coherence - continuous coherence-scaled encoding
     """
     trial_duration = int(trial.duration)
     trial_design = np.zeros((trial_duration, config.get_total_features()))
@@ -197,7 +214,11 @@ def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
     resp_bin = int(trial.response_onset)
     if config.STIMULUS_DURATION_MS > 0 and 0 < stim_bin < resp_bin <= trial_duration:
         stim_matrix = np.zeros((trial_duration, 1))
-        stim_matrix[stim_bin - 1:resp_bin] = stim_value
+        if config.STIMULUS_RAMP:
+            n_stim_bins = resp_bin - stim_bin
+            stim_matrix[stim_bin - 1:resp_bin, 0] = stim_value * np.arange(1, n_stim_bins + 1)
+        else:
+            stim_matrix[stim_bin - 1:resp_bin] = stim_value
         stim_conv, _ = poisson_glm_utils.convolve_with_basis(
             stim_matrix,
             config.STIMULUS_BASIS,
@@ -232,7 +253,12 @@ def _build_single_trial(trial, coh_levels, feature_idx, config, stim_value):
     history_matrix = poisson_glm_utils.create_post_spike_history_matrix(trial.spike_train)
     trial_design[:, feature_idx['history_start']:feature_idx['history_end']] = history_matrix
 
-    # 5. INTERCEPT
+    # 5. LOG(RT) SCALAR COVARIATE
+    if config.INCLUDE_LOG_RT and feature_idx['log_rt_idx'] is not None:
+        if 0 < stim_bin < resp_bin <= trial_duration:
+            trial_design[:, feature_idx['log_rt_idx']] = np.log(resp_bin - stim_bin)
+
+    # 6. INTERCEPT
     trial_design[:, feature_idx['intercept_idx']] = 1.0
 
     return trial_design
