@@ -32,6 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMIT_SCRIPT="${SCRIPT_DIR}/submit_neuron_cv.sh"
 
 MODELS=(
+    # Base models
     0stim_2choice_1500ms
     1stim_1coh_0choice
     1stim_1coh_2choice_1500ms
@@ -39,6 +40,17 @@ MODELS=(
     1stim_7coh_2choice_1500ms
     7stim_7coh_0choice
     7stim_7coh_2choice_1500ms
+    # + log(RT) scalar covariate
+    0stim_2choice_1500ms_logrt
+    1stim_1coh_0choice_logrt
+    1stim_1coh_2choice_1500ms_logrt
+    1stim_7coh_0choice_logrt
+    1stim_7coh_2choice_1500ms_logrt
+    7stim_7coh_0choice_logrt
+    7stim_7coh_2choice_1500ms_logrt
+    # Ramp stimulus input
+    1stim_1coh_2choice_1500ms_ramp
+    1stim_1coh_2choice_1500ms_ramp_logrt
 )
 
 echo "Submitting ${#MODELS[@]} models for prior_cond=${PRIOR_COND}, outcome_filter=${OUTCOME_FILTER}"

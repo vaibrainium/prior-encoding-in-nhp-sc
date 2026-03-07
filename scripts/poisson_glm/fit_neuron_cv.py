@@ -5,9 +5,10 @@ Designed for HPC array job parallelization — one job per neuron.
 
 Usage:
     python scripts/poisson_glm/fit_neuron_cv.py --neuron_id 42 --model_file 1stim_1coh_2choice_1500ms
-    python scripts/poisson_glm/fit_neuron_cv.py --neuron_id 42 --model_file 7stim_7coh_2choice_1500ms --prior_cond equal_block --outcome_filter correct_only
+    python scripts/poisson_glm/fit_neuron_cv.py --neuron_id 42 --model_file 7stim_7coh_2choice_1500ms --prior_cond equal_only --outcome_filter correct_only
 
 Available model files (scripts/poisson_glm/models/):
+    # Base models
     0stim_2choice_1500ms
     1stim_1coh_0choice
     1stim_1coh_2choice_1500ms
@@ -15,6 +16,17 @@ Available model files (scripts/poisson_glm/models/):
     1stim_7coh_2choice_1500ms
     7stim_7coh_0choice
     7stim_7coh_2choice_1500ms
+    # + log(RT) scalar covariate
+    0stim_2choice_1500ms_logrt
+    1stim_1coh_0choice_logrt
+    1stim_1coh_2choice_1500ms_logrt
+    1stim_7coh_0choice_logrt
+    1stim_7coh_2choice_1500ms_logrt
+    7stim_7coh_0choice_logrt
+    7stim_7coh_2choice_1500ms_logrt
+    # ramp stimulus input (optional: also + log(RT))
+    1stim_1coh_2choice_1500ms_ramp
+    1stim_1coh_2choice_1500ms_ramp_logrt
 """
 
 import argparse

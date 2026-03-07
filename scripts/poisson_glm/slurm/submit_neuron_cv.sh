@@ -13,9 +13,14 @@
 # and submits a SLURM array job sized accordingly.
 #
 # Available MODEL_FILE values (scripts/poisson_glm/models/):
-#   0stim_2choice_1500ms  1stim_1coh_2choice_1500ms 1stim_1coh_0choice
-#   1stim_7coh_0choice    1stim_7coh_2choice_1500ms
-#   7stim_7coh_0choice    7stim_7coh_2choice_1500ms
+#   Base:    0stim_2choice_1500ms  1stim_1coh_0choice  1stim_1coh_2choice_1500ms
+#            1stim_7coh_0choice    1stim_7coh_2choice_1500ms
+#            7stim_7coh_0choice    7stim_7coh_2choice_1500ms
+#   +logRT:  0stim_2choice_1500ms_logrt  1stim_1coh_0choice_logrt
+#            1stim_1coh_2choice_1500ms_logrt  1stim_7coh_0choice_logrt
+#            1stim_7coh_2choice_1500ms_logrt  7stim_7coh_0choice_logrt
+#            7stim_7coh_2choice_1500ms_logrt
+#   Ramp:    1stim_1coh_2choice_1500ms_ramp  1stim_1coh_2choice_1500ms_ramp_logrt
 
 set -euo pipefail
 
