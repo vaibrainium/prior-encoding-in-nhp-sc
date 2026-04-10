@@ -1,4 +1,21 @@
-rejection_criteria: { mean_threshold: 4, var_threshold: 0.03 }
+rejection_criteria: 
+  multi_saccade:
+    onset_event: "saccade" # eye data aligned on response onset from timestamp
+    pre_onset_duration: 100 # ms
+    post_onset_duration: 75 # ms, we will look at the eye data from -pre_saccade_onset_duration to post_onset_duration after saccade onset to determine if it's a multi-saccade trial
+    percent_target_threshold: 0.75 # if the eye reaches this percentage of the target, then we consider it as a valid trial, otherwise we consider it as a multi-saccade trial and exclude it
+    fixation_window_radius: 1 # degree visual angle
+    
+    
+  anticipatory_saccade:
+    onset_event: "go" # eye data aligned on go cue from timestamp
+    pre_onset_duration: 200 # ms
+    post_onset_duration: 90 # ms, we will look at the eye data from pre_onset_duration before go cue to post_onset_duration after go cue to determine if it's an anticipatory saccade trial
+    amplitude_threshold: 2.5 # degree visual angle, if the eye moves more than it during the anticipatory time window, then we consider it as an anticipatory saccade trial and exclude it
+
+  psychometric_function: 
+    mean_threshold: 4
+    var_threshold: 0.03
 
 GLM_HMM:
   name: "masked_no_bias_1_back_prev_choice_coherence"
