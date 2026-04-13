@@ -11,9 +11,12 @@ services:
       - ./:/src/
       - "${DATAPATH}:/mnt/prior-data"
 
-    # command: sleep infinity; nvidia-smi;
     command: >
       bash -c "
+        mkdir -p /root/.vscode-server/bin &&
+        curl -fsSL https://update.code.visualstudio.com/commit:$$COMMIT/server-linux-x64/stable -o /tmp/vscode-server.tar.gz &&
+        tar -xz -C /root/.vscode-server/bin --strip-components=1 --one-top-level=$$COMMIT -f /tmp/vscode-server.tar.gz &&
+        rm /tmp/vscode-server.tar.gz &&
         pip uninstall -y ssm &&
         pip install --upgrade --force-reinstall --no-cache-dir numpy cython &&
         pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git &&
