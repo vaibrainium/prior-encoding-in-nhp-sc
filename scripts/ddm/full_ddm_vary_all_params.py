@@ -108,10 +108,10 @@ def _simulate_ddm_trials_numba(stimulus: np.ndarray, drift_gain: float, drift_of
 
             evidence += drift + noise - leak
 
-            # Apply urgency
+            # Apply urgency (t * dt converts step index to seconds; time_constant in 1/s)
             decision_var = evidence
             if time_constant != 0:
-                urgency_factor = 1 + t * time_constant
+                urgency_factor = 1 + t * dt * time_constant
                 decision_var = starting_point + (evidence - starting_point) * urgency_factor
 
             # Check boundaries
@@ -142,7 +142,7 @@ class DriftDiffusionSimulator:
         self.variance = 1.0
         self.dt = 0.001
         self.leak_rate = 0.01 if leak else 0.0
-        self.time_constant = 1e-2 if time_dependence else 0.0
+        self.time_constant = 0.0
 
         self._validate_parameters()
 
@@ -197,7 +197,7 @@ class DriftDiffusionSimulatorCUDA:
         self.variance = torch.tensor(1.0, device=self.device, dtype=torch.float32)
         self.dt = torch.tensor(0.001, device=self.device, dtype=torch.float32)
         self.leak_rate = torch.tensor(0.01 if leak else 0.0, device=self.device, dtype=torch.float32)
-        self.time_constant = torch.tensor(1e-2 if time_dependence else 0.0, device=self.device, dtype=torch.float32)
+        self.time_constant = torch.tensor(0.0, device=self.device, dtype=torch.float32)
 
         # Precomputed values
         self._noise_std = torch.sqrt(self.variance * self.dt)
@@ -256,11 +256,10 @@ class DriftDiffusionSimulatorCUDA:
 
             evidence[active_idx] += drift + noise - leak
 
-            # Apply urgency signal
+            # Apply urgency signal (t * dt converts step index to seconds; time_constant in 1/s)
             decision_var = evidence[active_idx]
-            if self.time_constant != 0:  # can be positive or negative
-                urgency_factor = 1 + t * self.time_constant
-                ##### t*self.time_constant?
+            if self.time_constant != 0:
+                urgency_factor = 1 + t * self.dt * self.time_constant
                 decision_var = starting_point + (evidence[active_idx] - starting_point) * urgency_factor
 
             # Boundary detection
@@ -425,7 +424,7 @@ class DecisionModel:
             bounds["leak_rate"] = (0.1, (0.0, 1.0))
 
         if self.enable_time_dependence:
-            bounds["time_constant"] = (0.01, (0.001, 0.1))
+            bounds["time_constant"] = (0.0, (-5.0, 5.0))
 
         return bounds
 
