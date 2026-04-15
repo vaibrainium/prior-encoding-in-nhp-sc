@@ -273,9 +273,15 @@ def test_cpu_objective(
 # CUDA tests
 # ---------------------------------------------------------------------------
 
-def test_cuda_simulator_exact(OldCUDA, NewCUDA, n_trials: int) -> None:
-    """Same torch.manual_seed → bit-identical rt and choice arrays on CUDA."""
-    print("\n── [CUDA] Torch simulator (exact match) ──")
+def test_cuda_simulator_stats(OldCUDA, NewCUDA, n_trials: int) -> None:
+    """
+    CUDA simulator statistical equivalence.
+
+    The optimised DriftDiffusionSimulatorCUDA precomputes all noise in one
+    kernel call, changing the seed→output mapping vs the old simulator.
+    Statistical properties are unchanged: check mean RT and choice proportion.
+    """
+    print("\n── [CUDA] Torch simulator (statistical) ──")
     stim = make_stimulus(n_trials, max_duration=1.0)
 
     param_sets = [
@@ -285,20 +291,28 @@ def test_cuda_simulator_exact(OldCUDA, NewCUDA, n_trials: int) -> None:
              ndt=0.15, variance=0.8, leak_rate=0.05, time_constant=1.0),
     ]
     for i, ps in enumerate(param_sets):
-        old_sim = OldCUDA(leak=True, time_dependence=True, device="cuda")
-        new_sim = NewCUDA(leak=True, time_dependence=True, device="cuda")
-        for sim in (old_sim, new_sim):
-            for k, v in ps.items():
-                setattr(sim, k, torch.tensor(v, device=sim.device, dtype=torch.float32))
+        old_rts, new_rts, old_chs, new_chs = [], [], [], []
+        for seed in range(5):
+            old_sim = OldCUDA(leak=True, time_dependence=True, device="cuda")
+            new_sim = NewCUDA(leak=True, time_dependence=True, device="cuda")
+            for sim in (old_sim, new_sim):
+                for k, v in ps.items():
+                    setattr(sim, k, torch.tensor(v, device=sim.device, dtype=torch.float32))
 
-        torch.manual_seed(42)
-        rt_o, ch_o, _ = old_sim.simulate_trials(stim)
-        torch.manual_seed(42)
-        rt_n, ch_n, _ = new_sim.simulate_trials(stim)
+            torch.manual_seed(seed)
+            rt_o, ch_o, _ = old_sim.simulate_trials(stim)
+            torch.manual_seed(seed)
+            rt_n, ch_n, _ = new_sim.simulate_trials(stim)
 
-        rt_ok = allclose(rt_o, rt_n)
-        ch_ok = allclose(ch_o, ch_n)
-        report(f"param_set {i + 1}: rt={rt_ok}, choice={ch_ok}", rt_ok and ch_ok)
+            old_rts.append(rt_o[~np.isnan(rt_o)]); old_chs.append(ch_o[~np.isnan(ch_o)])
+            new_rts.append(rt_n[~np.isnan(rt_n)]); new_chs.append(ch_n[~np.isnan(ch_n)])
+
+        old_mrt = np.mean(np.concatenate(old_rts)); new_mrt = np.mean(np.concatenate(new_rts))
+        old_pch = np.mean(np.concatenate(old_chs)); new_pch = np.mean(np.concatenate(new_chs))
+        rt_ok = abs(old_mrt - new_mrt) < 0.05
+        ch_ok = abs(old_pch - new_pch) < 0.05
+        report(f"param_set {i+1}: mean RT  old={old_mrt:.4f}  new={new_mrt:.4f}", rt_ok)
+        report(f"param_set {i+1}: choice % old={old_pch:.4f}  new={new_pch:.4f}", ch_ok)
 
 
 def test_cuda_objective(
@@ -499,7 +513,7 @@ if __name__ == "__main__":
 
     # ── CUDA path ───────────────────────────────────────────────────────
     if has_cuda:
-        test_cuda_simulator_exact(OldCUDA, NewCUDA, args.n_trials)
+        test_cuda_simulator_stats(OldCUDA, NewCUDA, args.n_trials)
         test_cuda_objective("AllParams",   OldAllModel,   AllParamsModel,  OldCUDA, args.n_trials, dual_prior=False)
         test_cuda_objective("ThreeParams", OldThreeModel, ThreeParamsModel, OldCUDA, args.n_trials, dual_prior=True)
     else:

@@ -208,41 +208,40 @@ class DriftDiffusionSimulatorCUDA:
         evidence = torch.full((n_trials,), starting_point, device=self.device, dtype=torch.float32)
         active = torch.ones(n_trials, dtype=torch.bool, device=self.device)
 
-        drift_rates = self.drift_gain * stim + self.drift_offset
+        drift_rates = self.drift_gain * stim + self.drift_offset  # (N, T)
+
+        # Precompute all noise in one kernel call instead of one per time step.
+        # noise_std may have drifted if variance/dt were updated after __init__,
+        # so recompute it here rather than relying on the cached _noise_std.
+        noise_std = torch.sqrt(self.variance * self.dt)
+        noise = torch.randn(n_trials, n_timepoints, device=self.device, dtype=torch.float32) * noise_std
 
         for t in range(1, n_timepoints):
             if not active.any():
                 break
 
-            active_idx = active.nonzero(as_tuple=True)[0]
-            valid_stim = ~torch.isnan(stim[active_idx, t])
-            if not valid_stim.any():
-                continue
-            active_idx = active_idx[valid_stim]
-            if len(active_idx) == 0:
-                continue
-
-            noise = torch.randn(len(active_idx), device=self.device, dtype=torch.float32) * self._noise_std
-            drift = drift_rates[active_idx, t - 1] * self.dt
-            leak = self.leak_rate * (evidence[active_idx] - starting_point) * self.dt
-            evidence[active_idx] += drift + noise - leak
+            # Element-wise update for all trials — no gather/scatter indexing.
+            # Inactive trials still accumulate evidence but their crossings are
+            # ignored (already masked out by `& active` below).
+            drift = drift_rates[:, t - 1] * self.dt
+            leak  = self.leak_rate * (evidence - starting_point) * self.dt
+            evidence += drift + noise[:, t] - leak
 
             # Urgency: t * dt converts step index to seconds; time_constant in 1/s
             if self.time_constant != 0:
                 urgency_factor = 1 + t * self.dt * self.time_constant
-                decision_var = starting_point + (evidence[active_idx] - starting_point) * urgency_factor
+                decision_var = starting_point + (evidence - starting_point) * urgency_factor
             else:
-                decision_var = evidence[active_idx]
+                decision_var = evidence
 
-            hit_upper = decision_var >= self.a
-            hit_lower = decision_var <= 0
-            crossed = hit_upper | hit_lower
+            hit_upper = (decision_var >= self.a) & active
+            hit_lower = (decision_var <= 0)      & active
+            crossed   = hit_upper | hit_lower
 
             if crossed.any():
-                cidx = active_idx[crossed]
-                rt[cidx] = t * self.dt + self.ndt
-                choice[cidx] = hit_upper[crossed].float()
-                active[cidx] = False
+                rt[crossed]     = t * self.dt + self.ndt
+                choice[crossed] = hit_upper[crossed].float()
+                active[crossed] = False
 
         return rt.cpu().numpy(), choice.cpu().numpy(), evidence.cpu().numpy()
 
