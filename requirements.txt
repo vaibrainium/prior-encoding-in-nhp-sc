@@ -25,6 +25,8 @@ omegaconf
 plotly
 numexpr
 matplotlib-venn
+fastparquet
+python-pptx
 
 # backwards compatibility
 pathlib2
