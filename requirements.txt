@@ -36,6 +36,9 @@ ipywidgets==8.1.8
 # cupy
 KDEpy==1.1.12
 
+emcee==3.1.6
+sbi==0.26.1
+
 # Modeling packages
 graphviz==0.21
 Cython==3.2.4
@@ -43,7 +46,12 @@ git+https://github.com/vaibrainium/ssm.git
 dPCA==1.0.5
 # ML
 # torch
-torch==2.4.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# torch==2.4.1+cu121 --index-url https://download.pytorch.org/whl/cu121
 torchvision==0.19.1
 torchaudio==2.4.1+cu121
 pyarrow==23.0.1
+h5py==3.16.0
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1+cu121

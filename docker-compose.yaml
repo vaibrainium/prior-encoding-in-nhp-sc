@@ -13,13 +13,10 @@ services:
 
     command: >
       bash -c "
-        mkdir -p /root/.vscode-server/bin &&
-        curl -fsSL https://update.code.visualstudio.com/commit:$$COMMIT/server-linux-x64/stable -o /tmp/vscode-server.tar.gz &&
-        tar -xz -C /root/.vscode-server/bin --strip-components=1 --one-top-level=$$COMMIT -f /tmp/vscode-server.tar.gz &&
-        rm /tmp/vscode-server.tar.gz &&
         pip uninstall -y ssm &&
         pip install --upgrade --force-reinstall --no-cache-dir numpy cython &&
         pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git &&
+        RUN pip install torch==2.4.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
         pip install -r requirements.txt &&
         pip uninstall -y numpy &&
         pip install --no-cache-dir numpy &&
