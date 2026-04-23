@@ -260,25 +260,32 @@ class DriftDiffusionSimulatorCUDA:
 # Likelihood calculator
 # ---------------------------------------------------------------------------
 class LikelihoodCalculator:
-# class JointLikelihoodCalculator:
     """
-    Joint multinomial likelihood over (choice × RT bin) per coherence.
+    Joint multinomial NLL (KL divergence over choice × RT bins per coherence)
+    plus an optional Conditional Accuracy Function (CAF) term.
 
-    Robust, optimizer-safe, and backward-compatible.
+    CAF term: pools all non-zero coherence trials, bins by RT quantile,
+    computes accuracy per bin, and penalises MSE between data and prediction.
+    This directly constrains leak vs urgency, which are otherwise hard to
+    distinguish from per-coherence summaries alone.
     """
 
     def __init__(
         self,
         nbins: int = 5,
         p_min: float = 1e-6,
+        caf_weight: float = 1.0,
+        caf_bins: int = 5,
         rt_weight=None,           # legacy (ignored)
         sparse_threshold=None,    # legacy (ignored)
         **kwargs
     ):
-        self.nbins = nbins
-        self.p_min = p_min
-        self.eps   = 1e-12
-        self._q_grid = np.linspace(1/(nbins+1), nbins/(nbins+1), nbins)
+        self.nbins      = nbins
+        self.p_min      = p_min
+        self.caf_weight = caf_weight
+        self.caf_bins   = caf_bins
+        self.eps        = 1e-12
+        self._q_grid    = np.linspace(1/(nbins+1), nbins/(nbins+1), nbins)
 
         if rt_weight is not None or sparse_threshold is not None or kwargs:
             warnings.warn(
@@ -292,6 +299,47 @@ class LikelihoodCalculator:
     # ----------------------------
     def _valid_mask(self, rt, choice):
         return np.isfinite(rt) & np.isfinite(choice)
+
+    def _caf_nll(self, rt_data, ch_data, coh_data, rt_pred, ch_pred, coh_pred):
+        """
+        MSE between data and predicted CAF, scaled by n_obs × caf_weight.
+
+        RT quantile boundaries are derived from the data and applied to both
+        data and predictions, so the bins are always comparable.
+        Coherence=0 trials are excluded (no ground-truth correct answer).
+        """
+        def _filter(rt, ch, coh):
+            mask = (np.round(coh, 2) != 0) & np.isfinite(rt) & np.isfinite(ch)
+            return rt[mask], ch[mask], coh[mask]
+
+        rt_d, ch_d, coh_d = _filter(rt_data, ch_data, coh_data)
+        rt_p, ch_p, coh_p = _filter(rt_pred,  ch_pred,  coh_pred)
+
+        if len(rt_d) < self.caf_bins or len(rt_p) < self.caf_bins:
+            return 0.0
+
+        # correct = choice aligned with coherence sign
+        correct_d = ((coh_d > 0) & (ch_d == 1)) | ((coh_d < 0) & (ch_d == 0))
+        correct_p = ((coh_p > 0) & (ch_p == 1)) | ((coh_p < 0) & (ch_p == 0))
+
+        # data-derived RT quantile boundaries (equal-mass bins under data)
+        boundaries = np.quantile(rt_d, np.linspace(0, 1, self.caf_bins + 1))
+        boundaries[-1] += 1e-9  # include max RT
+
+        caf_d, caf_p = [], []
+        for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+            bd = (rt_d >= lo) & (rt_d < hi)
+            bp = (rt_p >= lo) & (rt_p < hi)
+            if not bd.any() or not bp.any():
+                continue
+            caf_d.append(correct_d[bd].mean())
+            caf_p.append(correct_p[bp].mean())
+
+        if not caf_d:
+            return 0.0
+
+        mse = float(np.mean((np.array(caf_d) - np.array(caf_p)) ** 2))
+        return self.caf_weight * len(rt_d) * mse
 
     def _joint_counts(self, rt, choice, boundaries, choice_vals):
         n_rt_bins = self.nbins + 1
@@ -333,6 +381,11 @@ class LikelihoodCalculator:
             # basic check
             if rt_pred.size == 0 or rt_data.size == 0:
                 return 1e6
+
+            # Normalise coherence dtype: float32(-0.18) != float64(-0.18) so
+            # the == comparisons below silently drop those coherence bins.
+            coh_pred = np.round(coh_pred.astype(float), 2)
+            coh_data = np.round(coh_data.astype(float), 2)
 
             # remove NaNs / infs
             vp = self._valid_mask(rt_pred, choice_pred)
@@ -396,6 +449,13 @@ class LikelihoodCalculator:
                     return 1e6
 
                 total += kl
+
+            # CAF term: pooled across coherences, constrains leak vs urgency
+            if self.caf_weight > 0:
+                total += self._caf_nll(
+                    rt_data, choice_data, coh_data,
+                    rt_pred, choice_pred, coh_pred,
+                )
 
             return float(total) if np.isfinite(total) else 1e6
 
@@ -526,7 +586,8 @@ class DecisionModel:
         lp = likelihood_params or {}
         self.likelihood_calc = LikelihoodCalculator(
             nbins=lp.get("nbins", 5),
-            # rt_weight=lp.get("rt_weight", 1.0),
+            caf_weight=lp.get("caf_weight", 0.0),
+            caf_bins=lp.get("caf_bins", 5),
         )
         logger.info(
             "Initialized %s | device=%s",
