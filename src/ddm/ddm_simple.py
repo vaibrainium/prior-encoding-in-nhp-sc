@@ -276,6 +276,7 @@ class LikelihoodCalculator:
         p_min: float = 1e-6,
         caf_weight: float = 1.0,
         caf_bins: int = 5,
+        rt_var_weight: float = 0.0,   # <-- add this
         rt_weight=None,           # legacy (ignored)
         sparse_threshold=None,    # legacy (ignored)
         **kwargs
@@ -284,6 +285,7 @@ class LikelihoodCalculator:
         self.p_min      = p_min
         self.caf_weight = caf_weight
         self.caf_bins   = caf_bins
+        self.rt_var_weight = rt_var_weight
         self.eps        = 1e-12
         self._q_grid    = np.linspace(1/(nbins+1), nbins/(nbins+1), nbins)
 
@@ -359,6 +361,39 @@ class LikelihoodCalculator:
             counts[choice_map[c], b] += 1
 
         return counts.reshape(-1)
+
+    def _variance_nll(self, rt_data, coh_data, rt_pred, coh_pred):
+        """
+        Penalizes mismatch in RT variance per coherence level.
+        Leak inflates RT variance at low coherence disproportionately,
+        giving the optimizer a direct signal to separate leak from urgency.
+        Uses log-ratio so the penalty is scale-invariant.
+        """
+        coh_data = np.round(coh_data.astype(float), 2)
+        coh_pred = np.round(coh_pred.astype(float), 2)
+
+        total = 0.0
+        n_bins = 0
+
+        for coh in np.unique(coh_data):
+            rd = rt_data[coh_data == coh]
+            rp = rt_pred[coh_pred == coh]
+
+            if len(rd) < 5 or len(rp) < 5:
+                continue
+
+            var_d = np.var(rd)
+            var_p = np.var(rp)
+
+            # log-ratio penalty: symmetric, scale-invariant
+            total += (np.log(var_p + 1e-6) - np.log(var_d + 1e-6)) ** 2
+            n_bins += 1
+
+        if n_bins == 0:
+            return 0.0
+
+        # normalize by n_bins so weight is interpretable regardless of n coherences
+        return self.rt_var_weight * len(rt_data) * (total / n_bins)
 
     # ----------------------------
     # Main likelihood
@@ -455,6 +490,13 @@ class LikelihoodCalculator:
                 total += self._caf_nll(
                     rt_data, choice_data, coh_data,
                     rt_pred, choice_pred, coh_pred,
+                )
+
+            # RT variance term: penalizes mismatch in RT variance per coherence level
+            if self.rt_var_weight > 0:
+                total += self._variance_nll(
+                    rt_data, coh_data,
+                    rt_pred, coh_pred,
                 )
 
             return float(total) if np.isfinite(total) else 1e6
