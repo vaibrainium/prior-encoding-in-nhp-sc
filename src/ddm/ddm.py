@@ -1,34 +1,23 @@
 """
-ddm_base.py
+ddm_simple.py — Simplified DDM simulation and fitting engine.
 
-Pure DDM fitting engine. This module knows nothing about which parameters
-exist, how many conditions there are, or which parameters are shared vs.
-condition-specific. All of that is the responsibility of concrete model
-classes in ddm_model.py.
+Classes
+-------
+ParamSpec                   (default, bounds) for a free parameter
+DriftDiffusionSimulator     CPU backend (Numba)
+DriftDiffusionSimulatorCUDA GPU/CPU backend (PyTorch)
+LikelihoodCalculator        quantile-based NLL
+DecisionModel               abstract fitting engine (subclass in ddm_model.py)
 
-What lives here
----------------
-DDMParams                    -- flat container of all simulator inputs
-ParamSpec                    -- (default, bounds) descriptor for a free parameter
-SimResult                    -- typed outcome of _simulate_condition
-DriftDiffusionSimulator      -- CPU (Numba) backend
-DriftDiffusionSimulatorCUDA  -- GPU/CPU (PyTorch) backend
-LikelihoodCalculator         -- quantile-based NLL
-DecisionModel                -- abstract fitting engine
-
-What does NOT live here
------------------------
-- Which parameters are free, fixed, or shared across conditions
-- Parameter naming conventions (suffixes, per-condition keys)
-- Any specific DDMParams field referenced by name outside of DDMParams itself
+Parameters are passed as plain dicts. Use DEFAULT_PARAMS as a base and
+override keys as needed. validate_params() checks required fields.
 """
 
 from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from dataclasses import dataclass  # still used by ParamSpec
 
 import numpy as np
 import torch
@@ -38,91 +27,42 @@ from scipy.optimize import differential_evolution
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Column index of coherence in the stimulus array.
-COH_COL: int = 0
+COH_COL: int = 0  # column index of coherence in the stimulus array
 
 
 # ---------------------------------------------------------------------------
-# Data structures
+# Parameters as plain dict
 # ---------------------------------------------------------------------------
 
-@dataclass
-class DDMParams:
-    """
-    Flat container of all simulator inputs.
+DEFAULT_PARAMS: dict = {
+    "ndt":          0.1,
+    "a":            2.0,
+    "z":            0.5,
+    "drift_gain":   7.0,
+    "drift_offset": 0.0,
+    "variance":     1.0,
+    "dt":           0.001,
+    "leak_rate":    0.0,
+    "time_constant": 0.0,
+}
 
-    Passed by value into simulate_trials() so that parameter updates are
-    atomic and validate() can run before any simulation starts.
-    """
-    ndt: float = 0.1
-    a: float = 2.0
-    z: float = 0.5
-    drift_gain: float = 7.0
-    drift_offset: float = 0.0
-    variance: float = 1.0
-    dt: float = 0.001
-    leak_rate: float = 0.0
-    time_constant: float = 0.0
 
-    def validate(self) -> None:
-        if not (0 < self.a < 10):
-            raise ValueError(f"Invalid boundary separation: {self.a}")
-        if not (0 < self.z < 1):
-            raise ValueError(f"Invalid starting point: {self.z}")
-        if not (0 < self.dt < 0.01):
-            raise ValueError(f"Invalid time step: {self.dt}")
-        if self.ndt < 0:
-            raise ValueError(f"Invalid non-decision time: {self.ndt}")
+def validate_params(p: dict) -> None:
+    if not (0 < p["a"] < 10):
+        raise ValueError(f"Invalid boundary separation: {p['a']}")
+    if not (0 < p["z"] < 1):
+        raise ValueError(f"Invalid starting point: {p['z']}")
+    if not (0 < p["dt"] < 0.01):
+        raise ValueError(f"Invalid time step: {p['dt']}")
+    if p["ndt"] < 0:
+        raise ValueError(f"Invalid non-decision time: {p['ndt']}")
 
 
 @dataclass
 class ParamSpec:
-    """
-    Descriptor for a single free parameter: its default value and (lo, hi) bounds.
-
-    Lives in base so the fitting engine can read bounds generically without
-    knowing what the parameters mean. The actual specs dicts mapping names to
-    ParamSpec instances are defined in ddm_model.py. Callers can freely
-    subclass or instantiate ParamSpec to override defaults or bounds.
-    """
+    """Default value and (lo, hi) bounds for a single free parameter."""
     default: float
     bounds: tuple[float, float]
-
-
-@dataclass
-class SimResult:
-    """
-    Typed outcome of _simulate_condition.
-
-    Exactly one of the three states is active:
-      crashed=True          -- simulator raised an exception; caller returns 1e6
-      no_valid_trials=True  -- all reps produced <5 valid trials; caller may skip
-      rt/choice/coherence   -- valid arrays ready for likelihood calculation
-    """
-    crashed: bool = False
-    no_valid_trials: bool = False
-    rt: Optional[np.ndarray] = None
-    choice: Optional[np.ndarray] = None
-    coherence: Optional[np.ndarray] = None
-
-    @property
-    def ok(self) -> bool:
-        return not self.crashed and not self.no_valid_trials
-
-
-# ---------------------------------------------------------------------------
-# Simulator protocol
-# ---------------------------------------------------------------------------
-
-@runtime_checkable
-class DDMSimulator(Protocol):
-    """Common interface for all DDM simulator backends."""
-
-    def simulate_trials(
-        self, stimulus: np.ndarray, params: DDMParams
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Return (reaction_times, choices), both shape (n_trials,)."""
-        ...
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +82,6 @@ def _simulate_ddm_trials_numba(
     leak_rate: float,
     time_constant: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Numba-accelerated DDM simulation (CPU parallel)."""
     n_trials, n_timepoints = stimulus.shape
     rt = np.full(n_trials, np.nan, dtype=np.float32)
     choice = np.full(n_trials, np.nan, dtype=np.float32)
@@ -152,7 +91,6 @@ def _simulate_ddm_trials_numba(
 
     for trial in prange(n_trials):
         evidence = starting_point
-
         for t in range(1, n_timepoints):
             if np.isnan(stimulus[trial, t]):
                 break
@@ -181,29 +119,19 @@ def _simulate_ddm_trials_numba(
 
 
 class DriftDiffusionSimulator:
-    """DDM simulator using Numba for CPU parallelism."""
+    """Numba CPU simulator."""
 
     def simulate_trials(
-        self, stimulus: np.ndarray, params: DDMParams
+        self, stimulus: np.ndarray, params: dict
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Simulate DDM trials on CPU.
-
-        Args:
-            stimulus: (n_trials, n_timepoints) float32 array.
-            params:   Validated DDMParams instance.
-
-        Returns:
-            (rt, choice) arrays of shape (n_trials,).
-        """
         if stimulus.size == 0:
             return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
         stim = np.asarray(stimulus, dtype=np.float32)
         return _simulate_ddm_trials_numba(
             stim,
-            params.drift_gain, params.drift_offset,
-            params.a, params.z, params.ndt, params.dt,
-            params.variance, params.leak_rate, params.time_constant,
+            params["drift_gain"], params["drift_offset"],
+            params["a"], params["z"], params["ndt"], params["dt"],
+            params["variance"], params["leak_rate"], params["time_constant"],
         )
 
 
@@ -212,7 +140,16 @@ class DriftDiffusionSimulator:
 # ---------------------------------------------------------------------------
 
 class DriftDiffusionSimulatorCUDA:
-    """DDM simulator using PyTorch for vectorised GPU (or CPU) computation."""
+    """
+    PyTorch GPU/CPU simulator.
+
+    No-leak path: fully vectorized — cumsum builds the entire evidence
+    trajectory in one shot, argmax finds the first boundary crossing.
+    No Python loop over timesteps.
+
+    Leak path: falls back to the sequential loop (leak couples timesteps,
+    breaking the cumsum decomposition).
+    """
 
     def __init__(self, device: str | None = None):
         if device == "cuda" and not torch.cuda.is_available():
@@ -224,107 +161,364 @@ class DriftDiffusionSimulatorCUDA:
         logger.info("Using device: %s", self.device)
 
     def simulate_trials(
-        self, stimulus: np.ndarray | torch.Tensor, params: DDMParams
+        self, stimulus: np.ndarray | torch.Tensor, params: dict
     ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Simulate DDM trials on GPU or CPU via PyTorch.
-
-        Urgency tensor is precomputed once before the time loop.
-        All noise is drawn in a single kernel call.
-
-        Args:
-            stimulus: (n_trials, n_timepoints) array or Tensor.
-            params:   Validated DDMParams instance.
-
-        Returns:
-            (rt, choice) as numpy arrays of shape (n_trials,).
-        """
         dev = self.device
-
-        if not isinstance(stimulus, torch.Tensor):
-            stim = torch.tensor(stimulus, device=dev, dtype=torch.float32)
-        else:
+        if isinstance(stimulus, torch.Tensor):
             stim = stimulus.to(dev, dtype=torch.float32)
-
+        else:
+            # Cache the GPU tensor: during fitting the same numpy array is passed
+            # thousands of times. Re-uploading it on every call is the main GPU
+            # bottleneck. We key the cache on the array's data pointer + shape.
+            ptr = stimulus.__array_interface__["data"][0]
+            key = (ptr, stimulus.shape)
+            if getattr(self, "_stim_cache_key", None) != key:
+                self._stim_cache_key = key
+                self._stim_cache     = torch.tensor(stimulus, device=dev, dtype=torch.float32)
+            stim = self._stim_cache
         n_trials, n_timepoints = stim.shape
+        T = n_timepoints - 1
 
-        a             = torch.tensor(params.a,             device=dev, dtype=torch.float32)
-        z             = torch.tensor(params.z,             device=dev, dtype=torch.float32)
-        ndt           = torch.tensor(params.ndt,           device=dev, dtype=torch.float32)
-        drift_gain    = torch.tensor(params.drift_gain,    device=dev, dtype=torch.float32)
-        drift_offset  = torch.tensor(params.drift_offset,  device=dev, dtype=torch.float32)
-        variance      = torch.tensor(params.variance,      device=dev, dtype=torch.float32)
-        dt            = torch.tensor(params.dt,            device=dev, dtype=torch.float32)
-        leak_rate     = torch.tensor(params.leak_rate,     device=dev, dtype=torch.float32)
-        time_constant = torch.tensor(params.time_constant, device=dev, dtype=torch.float32)
+        a             = float(params["a"])
+        z             = float(params["z"])
+        ndt           = float(params["ndt"])
+        drift_gain    = float(params["drift_gain"])
+        drift_offset  = float(params["drift_offset"])
+        variance      = float(params["variance"])
+        dt            = float(params["dt"])
+        leak_rate     = float(params["leak_rate"])
+        time_constant = float(params["time_constant"])
 
-        starting_point = z * a
-        noise_std = torch.sqrt(variance * dt)
+        sp        = z * a
+        noise_std = (variance * dt) ** 0.5
 
-        rt       = torch.full((n_trials,), float("nan"), device=dev, dtype=torch.float32)
-        choice   = torch.full((n_trials,), float("nan"), device=dev, dtype=torch.float32)
-        evidence = torch.full((n_trials,), starting_point.item(), device=dev, dtype=torch.float32)
-        active   = torch.ones(n_trials, dtype=torch.bool, device=dev)
+        # valid[i]: step t=i+1 is live (stim not NaN)
+        valid     = ~torch.isnan(stim[:, 1:])                                 # (N, T)
+        drift_inc = torch.nan_to_num((drift_gain * stim[:, :-1] + drift_offset) * dt)  # (N, T)
+        noise_inc = torch.randn(n_trials, T, device=dev) * noise_std          # (N, T)
 
-        drift_rates = drift_gain * stim + drift_offset  # (N, T)
-        noise = torch.randn(n_trials, n_timepoints, device=dev, dtype=torch.float32) * noise_std
+        if leak_rate == 0.0:
+            # ------------------------------------------------------------------
+            # No-leak: evidence is a simple cumsum of increments
+            # ------------------------------------------------------------------
+            evidence = sp + torch.cumsum((drift_inc + noise_inc) * valid, dim=1)
+        else:
+            # ------------------------------------------------------------------
+            # Leak: e[t] = α·e[t-1] + b[t],  α = 1 − leak·dt
+            #
+            # Closed-form solution via FFT convolution (no Python time loop):
+            #   e[t] = αᵗ·sp  +  Σ_{j=0}^{t-1} α^{t-1-j} · b[j]
+            #        = αᵗ·sp  +  (b ★ w)[t-1]   where w[k] = αᵏ
+            #
+            # Crossing detection uses valid mask so the decaying evidence
+            # after a NaN stimulus never triggers a false crossing.
+            # ------------------------------------------------------------------
+            α   = 1.0 - leak_rate * dt
+            # forcing term includes the leak's pull toward sp
+            b   = (drift_inc + noise_inc + sp * leak_rate * dt) * valid       # (N, T)
 
-        use_urgency = params.time_constant != 0.0
-        if use_urgency:
-            t_idx = torch.arange(n_timepoints, device=dev, dtype=torch.float32)
-            urgency_factors = 1.0 + t_idx * dt * time_constant  # (T,)
+            fft_n = 1 << (2 * T - 1).bit_length()   # next power-of-2 ≥ 2T-1
+            k     = torch.arange(T, device=dev, dtype=torch.float32)
+            w     = torch.tensor(α, device=dev, dtype=torch.float32).pow(k)   # (T,)
 
-        for t in range(1, n_timepoints):
-            if not active.any():
-                break
+            particular = torch.fft.irfft(
+                torch.fft.rfft(b, n=fft_n, dim=1) * torch.fft.rfft(w, n=fft_n),
+                n=fft_n, dim=1,
+            )[:, :T]                                                           # (N, T)
 
-            drift = drift_rates[:, t - 1] * dt
-            leak  = leak_rate * (evidence - starting_point) * dt
-            evidence = evidence + drift + noise[:, t] - leak
+            t_exp    = torch.arange(1, T + 1, device=dev, dtype=torch.float32)
+            evidence = torch.tensor(α, device=dev).pow(t_exp) * sp + particular  # (N, T)
 
-            if use_urgency:
-                decision_var = starting_point + (evidence - starting_point) * urgency_factors[t]
-            else:
-                decision_var = evidence
+        if time_constant != 0.0:
+            t_idx        = torch.arange(1, n_timepoints, device=dev, dtype=torch.float32)
+            decision_var = sp + (evidence - sp) * (1.0 + t_idx * dt * time_constant)
+        else:
+            decision_var = evidence
 
-            hit_upper = (decision_var >= a) & active
-            hit_lower = (decision_var <= 0) & active
-            crossed   = hit_upper | hit_lower
+        upper   = (decision_var >= a) & valid
+        lower   = (decision_var <= 0) & valid
+        crossed = upper | lower
 
-            if crossed.any():
-                rt[crossed]     = t * dt + ndt
-                choice[crossed] = hit_upper[crossed].float()
-                active[crossed] = False
+        rt     = torch.full((n_trials,), float("nan"), device=dev, dtype=torch.float32)
+        choice = torch.full((n_trials,), float("nan"), device=dev, dtype=torch.float32)
+
+        has_crossed = crossed.any(dim=1)
+        if has_crossed.any():
+            first_idx       = crossed[has_crossed].int().argmax(dim=1)
+            rt[has_crossed] = (first_idx.float() + 1) * dt + ndt
+            choice[has_crossed] = (
+                upper[has_crossed]
+                .gather(1, first_idx.unsqueeze(1))
+                .squeeze(1)
+                .float()
+            )
 
         return rt.cpu().numpy(), choice.cpu().numpy()
 
+
+# ---------------------------------------------------------------------------
+# Likelihood calculator
+# ---------------------------------------------------------------------------
 class LikelihoodCalculator:
     """
-    Computes a combined negative log-likelihood from choice proportions and an
-    RT term that adapts based on how many predicted trials are available per cell.
+    Joint multinomial NLL (KL divergence over choice × RT bins per coherence)
+    plus an optional Conditional Accuracy Function (CAF) term.
 
-    RT term:
-      - >= sparse_threshold predicted trials: KL-divergence multinomial NLL
-        (Heathcote, Brown & Mewhort 2002). Bins both observed and predicted RTs
-        using data-quantile boundaries, then computes KL(obs || pred) * n_obs.
-        This equals zero when pred matches obs perfectly and is scale-consistent
-        with the choice NLL (both in nats). No rt_weight needed.
-      - < sparse_threshold predicted trials: quantile MSE fallback, scaled by
-        rt_weight * n_obs. rt_weight is a no-op on the KL path.
+    CAF term: pools all non-zero coherence trials, bins by RT quantile,
+    computes accuracy per bin, and penalises MSE between data and prediction.
+    This directly constrains leak vs urgency, which are otherwise hard to
+    distinguish from per-coherence summaries alone.
+    """
 
-    The threshold is on rt_pred (not rt_data) because sparsity on the predicted
-    side is what destabilises bin probability estimates.
+    def __init__(
+        self,
+        nbins: int = 5,
+        p_min: float = 1e-6,
+        caf_weight: float = 1.0,
+        caf_bins: int = 5,
+        rt_var_weight: float = 0.0,   # <-- add this
+        rt_weight=None,           # legacy (ignored)
+        sparse_threshold=None,    # legacy (ignored)
+        **kwargs
+    ):
+        self.nbins      = nbins
+        self.p_min      = p_min
+        self.caf_weight = caf_weight
+        self.caf_bins   = caf_bins
+        self.rt_var_weight = rt_var_weight
+        self.eps        = 1e-12
+        self._q_grid    = np.linspace(1/(nbins+1), nbins/(nbins+1), nbins)
+
+        if rt_weight is not None or sparse_threshold is not None or kwargs:
+            warnings.warn(
+                "Deprecated likelihood parameters (rt_weight, sparse_threshold, etc.) "
+                "are ignored in JointLikelihoodCalculator.",
+                RuntimeWarning
+            )
+
+    # ----------------------------
+    # Helpers
+    # ----------------------------
+    def _valid_mask(self, rt, choice):
+        return np.isfinite(rt) & np.isfinite(choice)
+
+    def _caf_nll(self, rt_data, ch_data, coh_data, rt_pred, ch_pred, coh_pred):
+        """
+        MSE between data and predicted CAF, scaled by n_obs × caf_weight.
+
+        RT quantile boundaries are derived from the data and applied to both
+        data and predictions, so the bins are always comparable.
+        Coherence=0 trials are excluded (no ground-truth correct answer).
+        """
+        def _filter(rt, ch, coh):
+            mask = (np.round(coh, 2) != 0) & np.isfinite(rt) & np.isfinite(ch)
+            return rt[mask], ch[mask], coh[mask]
+
+        rt_d, ch_d, coh_d = _filter(rt_data, ch_data, coh_data)
+        rt_p, ch_p, coh_p = _filter(rt_pred,  ch_pred,  coh_pred)
+
+        if len(rt_d) < self.caf_bins or len(rt_p) < self.caf_bins:
+            return 0.0
+
+        # correct = choice aligned with coherence sign
+        correct_d = ((coh_d > 0) & (ch_d == 1)) | ((coh_d < 0) & (ch_d == 0))
+        correct_p = ((coh_p > 0) & (ch_p == 1)) | ((coh_p < 0) & (ch_p == 0))
+
+        # data-derived RT quantile boundaries (equal-mass bins under data)
+        boundaries = np.quantile(rt_d, np.linspace(0, 1, self.caf_bins + 1))
+        boundaries[-1] += 1e-9  # include max RT
+
+        caf_d, caf_p = [], []
+        for lo, hi in zip(boundaries[:-1], boundaries[1:]):
+            bd = (rt_d >= lo) & (rt_d < hi)
+            bp = (rt_p >= lo) & (rt_p < hi)
+            if not bd.any() or not bp.any():
+                continue
+            caf_d.append(correct_d[bd].mean())
+            caf_p.append(correct_p[bp].mean())
+
+        if not caf_d:
+            return 0.0
+
+        mse = float(np.mean((np.array(caf_d) - np.array(caf_p)) ** 2))
+        return self.caf_weight * len(rt_d) * mse
+
+    def _joint_counts(self, rt, choice, boundaries, choice_vals):
+        n_rt_bins = self.nbins + 1
+
+        # bin RTs
+        rt_bins = np.searchsorted(boundaries, rt)
+
+        # map choices → indices (fixed from data)
+        choice_map = {c: i for i, c in enumerate(choice_vals)}
+        counts = np.zeros((len(choice_vals), n_rt_bins), dtype=float)
+
+        for c, b in zip(choice, rt_bins):
+            if not np.isfinite(c):
+                continue
+            if c not in choice_map:
+                continue
+            counts[choice_map[c], b] += 1
+
+        return counts.reshape(-1)
+
+    def _variance_nll(self, rt_data, coh_data, rt_pred, coh_pred):
+        """
+        Penalizes mismatch in RT variance per coherence level.
+        Leak inflates RT variance at low coherence disproportionately,
+        giving the optimizer a direct signal to separate leak from urgency.
+        Uses log-ratio so the penalty is scale-invariant.
+        """
+        coh_data = np.round(coh_data.astype(float), 2)
+        coh_pred = np.round(coh_pred.astype(float), 2)
+
+        total = 0.0
+        n_bins = 0
+
+        for coh in np.unique(coh_data):
+            rd = rt_data[coh_data == coh]
+            rp = rt_pred[coh_pred == coh]
+
+            if len(rd) < 5 or len(rp) < 5:
+                continue
+
+            var_d = np.var(rd)
+            var_p = np.var(rp)
+
+            # log-ratio penalty: symmetric, scale-invariant
+            total += (np.log(var_p + 1e-6) - np.log(var_d + 1e-6)) ** 2
+            n_bins += 1
+
+        if n_bins == 0:
+            return 0.0
+
+        # normalize by n_bins so weight is interpretable regardless of n coherences
+        return self.rt_var_weight * len(rt_data) * (total / n_bins)
+
+    # ----------------------------
+    # Main likelihood
+    # ----------------------------
+    def calculate_likelihood(
+        self,
+        rt_pred, choice_pred,
+        rt_data, choice_data,
+        coh_pred, coh_data
+    ):
+        try:
+            # convert to arrays
+            rt_pred = np.asarray(rt_pred)
+            rt_data = np.asarray(rt_data)
+            choice_pred = np.asarray(choice_pred)
+            choice_data = np.asarray(choice_data)
+            coh_pred = np.asarray(coh_pred)
+            coh_data = np.asarray(coh_data)
+
+            # basic check
+            if rt_pred.size == 0 or rt_data.size == 0:
+                return 1e6
+
+            # Normalise coherence dtype: float32(-0.18) != float64(-0.18) so
+            # the == comparisons below silently drop those coherence bins.
+            coh_pred = np.round(coh_pred.astype(float), 2)
+            coh_data = np.round(coh_data.astype(float), 2)
+
+            # remove NaNs / infs
+            vp = self._valid_mask(rt_pred, choice_pred)
+            vd = self._valid_mask(rt_data, choice_data)
+
+            if not (vp.any() and vd.any()):
+                return 1e6
+
+            rt_pred, choice_pred, coh_pred = rt_pred[vp], choice_pred[vp], coh_pred[vp]
+            rt_data, choice_data, coh_data = rt_data[vd], choice_data[vd], coh_data[vd]
+
+            total = 0.0
+
+            # loop over coherence conditions
+            for coh in np.unique(coh_data):
+                dm = coh_data == coh
+                pm = coh_pred == coh
+
+                if not (dm.any() and pm.any()):
+                    continue
+
+                rt_d, ch_d = rt_data[dm], choice_data[dm]
+                rt_p, ch_p = rt_pred[pm], choice_pred[pm]
+
+                # guard against tiny samples
+                if len(rt_d) < 5 or len(rt_p) < 5:
+                    continue
+
+                # skip degenerate RT distributions
+                if np.all(rt_d == rt_d[0]):
+                    continue
+
+                # compute quantile bins safely
+                try:
+                    boundaries = np.quantile(rt_d, self._q_grid)
+                except Exception:
+                    continue
+
+                # FIXED: use data-defined choice set
+                choice_vals = np.unique(ch_d)
+
+                obs_counts = self._joint_counts(rt_d, ch_d, boundaries, choice_vals)
+                pred_counts = self._joint_counts(rt_p, ch_p, boundaries, choice_vals)
+
+                if obs_counts.sum() == 0 or pred_counts.sum() == 0:
+                    continue
+
+                K = len(obs_counts)
+
+                # smooth probabilities
+                obs_p  = (obs_counts  + self.eps) / (obs_counts.sum()  + self.eps * K)
+                pred_p = (pred_counts + self.eps) / (pred_counts.sum() + self.eps * K)
+
+                # avoid log(0)
+                pred_p = np.clip(pred_p, self.p_min, 1.0)
+
+                # KL divergence (scaled by counts)
+                kl = np.sum(obs_counts * (np.log(obs_p) - np.log(pred_p)))
+
+                if not np.isfinite(kl):
+                    return 1e6
+
+                total += kl
+
+            # CAF term: pooled across coherences, constrains leak vs urgency
+            if self.caf_weight > 0:
+                total += self._caf_nll(
+                    rt_data, choice_data, coh_data,
+                    rt_pred, choice_pred, coh_pred,
+                )
+
+            # RT variance term: penalizes mismatch in RT variance per coherence level
+            if self.rt_var_weight > 0:
+                total += self._variance_nll(
+                    rt_data, coh_data,
+                    rt_pred, coh_pred,
+                )
+
+            return float(total) if np.isfinite(total) else 1e6
+
+        except Exception:
+            # NEVER let optimizer crash
+            return 1e6
+
+
+class LikelihoodCalculatorOld:
+    """
+    Combined NLL from choice proportions + RT quantile term.
+
+    Uses KL-divergence multinomial NLL for the RT term when enough predicted
+    trials are available (>= sparse_threshold); falls back to quantile MSE
+    otherwise.
 
     Args:
-        nbins:            Number of interior quantile boundaries, giving nbins+1
-                          RT bins with equal probability mass under the data.
-        rt_weight:        Scalar applied to the MSE fallback term only.
-        sparse_threshold: Minimum rt_pred trials required for the KL path.
-        p_min:            Choice probabilities are clipped to [p_min, 1-p_min]
-                          before the log. Prevents near-zero NLL from degenerate
-                          parameter combinations that predict p~1 for all choices.
-                          Physiologically motivated: real DDMs always produce some
-                          errors even at the highest coherence (~5%).
+        nbins:            RT bins (nbins+1 equal-mass bins from data quantiles).
+        rt_weight:        Scalar for the MSE fallback only.
+        sparse_threshold: Min predicted trials required for the KL path.
+        p_min:            Choice prob floor/ceiling to prevent degenerate NLL.
     """
 
     def __init__(
@@ -339,50 +533,25 @@ class LikelihoodCalculator:
         self.sparse_threshold = sparse_threshold
         self.p_min            = p_min
         self.eps              = 1e-12
-        # Equal-probability quantile grid: nbins interior boundaries divide
-        # the RT distribution into nbins+1 bins with equal mass under the data.
-        # Using linspace(1/(nbins+1), nbins/(nbins+1), nbins) rather than
-        # linspace(0.1, 0.9, nbins) ensures no overflow artifact in the outer
-        # bins -- every bin captures exactly 1/(nbins+1) of the data.
-        self._q_grid = np.linspace(1 / (nbins + 1), nbins / (nbins + 1), nbins)
-        # Separate finer grid for the MSE fallback (interior quantiles only).
+        self._q_grid   = np.linspace(1 / (nbins + 1), nbins / (nbins + 1), nbins)
         self._mse_grid = np.linspace(0.1, 0.9, nbins)
 
-    def _data_boundaries(self, rt: np.ndarray) -> np.ndarray:
-        """
-        nbins interior RT boundaries derived from the observed distribution.
-        Bins via np.searchsorted on these boundaries gives nbins+1 equal-mass bins.
-        """
-        if rt.size < self.nbins:
-            return np.array([rt.min(), rt.max()])
-        return np.quantile(rt, self._q_grid)
-
-    def _rt_quantile_nll(self, rt_data: np.ndarray, rt_pred: np.ndarray) -> float:
-        """
-        RT NLL term, path selected by predicted sample size.
-
-        KL path (rt_pred.size >= sparse_threshold):
-            KL(obs || pred) * n_obs. Laplace smoothing prevents log(0).
-            Exactly zero when pred matches obs; positive otherwise.
-
-        MSE fallback (rt_pred.size < sparse_threshold):
-            Quantile MSE scaled by rt_weight * n_obs.
-        """
+    def _rt_nll(self, rt_data: np.ndarray, rt_pred: np.ndarray) -> float:
         n_bins     = self.nbins + 1
-        boundaries = self._data_boundaries(rt_data)
+        boundaries = (
+            np.quantile(rt_data, self._q_grid)
+            if rt_data.size >= self.nbins
+            else np.array([rt_data.min(), rt_data.max()])
+        )
 
         if rt_pred.size >= self.sparse_threshold:
-            obs_counts  = np.bincount(
-                np.searchsorted(boundaries, rt_data), minlength=n_bins
-            ).astype(float)
-            pred_counts = np.bincount(
-                np.searchsorted(boundaries, rt_pred), minlength=n_bins
-            ).astype(float)
-            obs_props  = (obs_counts  + self.eps) / (obs_counts.sum()  + self.eps * n_bins)
-            pred_props = (pred_counts + self.eps) / (pred_counts.sum() + self.eps * n_bins)
-            return float(np.sum(obs_counts * (np.log(obs_props) - np.log(pred_props))))
+            obs_counts  = np.bincount(np.searchsorted(boundaries, rt_data),  minlength=n_bins).astype(float)
+            pred_counts = np.bincount(np.searchsorted(boundaries, rt_pred), minlength=n_bins).astype(float)
+            obs_p  = (obs_counts  + self.eps) / (obs_counts.sum()  + self.eps * n_bins)
+            pred_p = (pred_counts + self.eps) / (pred_counts.sum() + self.eps * n_bins)
+            return float(np.sum(obs_counts * (np.log(obs_p) - np.log(pred_p))))
 
-        # MSE fallback
+        # sparse fallback: quantile MSE
         data_q = np.quantile(rt_data, self._mse_grid)
         pred_q = np.quantile(rt_pred, self._mse_grid)
         return self.rt_weight * rt_data.size * float(np.mean((data_q - pred_q) ** 2))
@@ -396,12 +565,11 @@ class LikelihoodCalculator:
         coherences_pred: np.ndarray,
         coherences_data: np.ndarray,
     ) -> float:
-
         if rt_pred.size == 0 or rt_data.size == 0:
             return 1e6
 
-        vp = ~(np.isnan(rt_pred)   | np.isnan(choice_pred))
-        vd = ~(np.isnan(rt_data)   | np.isnan(choice_data))
+        vp = ~(np.isnan(rt_pred)  | np.isnan(choice_pred))
+        vd = ~(np.isnan(rt_data)  | np.isnan(choice_data))
         if not (vp.any() and vd.any()):
             return 1e6
 
@@ -420,19 +588,17 @@ class LikelihoodCalculator:
                 if n_obs == 0:
                     continue
 
-                # Choice NLL -- clipped to prevent near-zero from p_pred ~ 1.
                 p_pred = float(np.mean(choice_pred[pm] == cv))
                 p_pred = np.clip(p_pred, self.p_min, 1.0 - self.p_min)
                 total -= n_obs * np.log(p_pred)
 
-                # RT term
                 rt_d = rt_data[dm & (choice_data == cv)]
                 rt_p = rt_pred[pm & (choice_pred == cv)]
-                if rt_d.size < 3 or rt_p.size < 3:
-                    continue
-                total += self._rt_quantile_nll(rt_d, rt_p)
+                if rt_d.size >= 3 and rt_p.size >= 3:
+                    total += self._rt_nll(rt_d, rt_p)
 
         return float(total) if np.isfinite(total) else 1e6
+
 
 # ---------------------------------------------------------------------------
 # Abstract fitting engine
@@ -440,24 +606,10 @@ class LikelihoodCalculator:
 
 class DecisionModel:
     """
-    Abstract DDM fitting engine.
-
-    This class knows how to run differential evolution and call the simulator,
-    but has zero knowledge of parameter names, conditions, or model structure.
-
-    Subclass responsibilities (implemented in ddm_model.py)
-    --------------------------------------------------------
-    param_specs : property -> dict[str, ParamSpec]
-        Ordered mapping of parameter key -> ParamSpec(default, bounds).
-        Keys are arbitrary; the base class treats them as opaque identifiers.
-        Defines the length and order of the flat optimiser vector.
-
-    _build_params(values, condition_idx=None) -> DDMParams
-        Translates a flat optimiser vector into a validated DDMParams.
-        condition_idx is an optional integer hint for multi-condition models.
-
-    _objective_function(values, data, stimulus, n_reps, seed, l1_weight) -> float
-        Returns negative log-likelihood plus any regularisation.
+    Abstract DDM fitting engine. Subclass and implement:
+      - param_specs property  -> dict[str, ParamSpec]
+      - _build_params(values, condition_idx) -> DDMParams
+      - _objective_function(values, data, stimulus, n_reps, seed, l1_weight) -> float
     """
 
     def __init__(
@@ -465,17 +617,19 @@ class DecisionModel:
         device: str | None = None,
         likelihood_params: dict | None = None,
     ):
-        if device == "cuda":
-            self.simulator: DriftDiffusionSimulator | DriftDiffusionSimulatorCUDA = (
-                DriftDiffusionSimulatorCUDA(device=device)
-            )
+        # Use Numba (fastest on CPU) unless CUDA is actually available.
+        if device == "cuda" and torch.cuda.is_available():
+            self.simulator = DriftDiffusionSimulatorCUDA(device="cuda")
         else:
+            if device == "cuda":
+                logger.warning("CUDA requested but unavailable, using Numba CPU.")
             self.simulator = DriftDiffusionSimulator()
 
         lp = likelihood_params or {}
         self.likelihood_calc = LikelihoodCalculator(
             nbins=lp.get("nbins", 5),
-            rt_weight=lp.get("rt_weight", 1.0),
+            caf_weight=lp.get("caf_weight", 0.0),
+            caf_bins=lp.get("caf_bins", 5),
         )
         logger.info(
             "Initialized %s | device=%s",
@@ -483,17 +637,11 @@ class DecisionModel:
             getattr(self.simulator, "device", "CPU"),
         )
 
-    # ------------------------------------------------------------------
-    # Subclass interface
-    # ------------------------------------------------------------------
-
     @property
     def param_specs(self) -> dict[str, ParamSpec]:
         raise NotImplementedError
 
-    def _build_params(
-        self, values: np.ndarray, condition_idx: int | None = None
-    ) -> DDMParams:
+    def _build_params(self, values: np.ndarray, condition_idx: int | None = None) -> dict:
         raise NotImplementedError
 
     def _objective_function(
@@ -507,23 +655,15 @@ class DecisionModel:
     ) -> float:
         raise NotImplementedError
 
-    # ------------------------------------------------------------------
-    # Simulation helper (shared infrastructure)
-    # ------------------------------------------------------------------
-
     def _simulate_condition(
         self,
         stimulus: np.ndarray,
-        params: DDMParams,
+        params: dict,
         n_reps: int,
-    ) -> SimResult:
+    ) -> dict | None:
         """
-        Run n_reps simulations on stimulus with the given params.
-
-        Returns a SimResult with one of three states:
-          crashed=True         -- simulator raised an exception
-          no_valid_trials=True -- all reps produced <5 valid trials
-          ok                   -- rt / choice / coherence arrays populated
+        Run n_reps simulations. Returns dict with rt/choice/coherence arrays,
+        or None if the simulation crashed or produced no valid trials.
         """
         all_rt, all_choice, all_coh = [], [], []
         for _ in range(n_reps):
@@ -531,7 +671,7 @@ class DecisionModel:
                 rt, choice = self.simulator.simulate_trials(stimulus, params)
             except Exception as exc:
                 logger.warning("Simulation failed: %s", exc)
-                return SimResult(crashed=True)
+                return None
             valid = (~np.isnan(rt)) & (~np.isnan(choice))
             if valid.sum() < 5:
                 continue
@@ -540,17 +680,13 @@ class DecisionModel:
             all_coh.append(stimulus[valid, COH_COL])
 
         if not all_rt:
-            return SimResult(no_valid_trials=True)
+            return None
 
-        return SimResult(
-            rt=np.concatenate(all_rt),
-            choice=np.concatenate(all_choice),
-            coherence=np.concatenate(all_coh),
-        )
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        return {
+            "rt":        np.concatenate(all_rt),
+            "choice":    np.concatenate(all_choice),
+            "coherence": np.concatenate(all_coh),
+        }
 
     def fit(
         self,
@@ -563,21 +699,10 @@ class DecisionModel:
         verbose: bool = True,
     ) -> dict:
         """
-        Fit model parameters to empirical data via differential evolution.
+        Fit parameters via differential evolution.
 
-        Args:
-            data:           Dict with at least 'signed_coherence', 'choice', 'rt'.
-                            Multi-condition models may require additional keys.
-            stimulus:       (n_trials, n_timepoints) array; column 0 is coherence.
-            max_iterations: DE max generations.
-            n_reps:         Simulation repetitions per objective evaluation.
-            seed:           RNG seed (applied once here, not per evaluation).
-            l1_weight:      L1 regularisation coefficient.
-            verbose:        Log progress.
-
-        Returns:
-            Dict with keys 'success', 'parameters', 'likelihood', 'n_iterations',
-            'optimization_result'.
+        Returns dict with keys: success, parameters, likelihood,
+        n_iterations, optimization_result.
         """
         if verbose:
             logger.info("Starting optimisation (%s)...", type(self).__name__)
@@ -588,7 +713,7 @@ class DecisionModel:
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        best_nll = [np.inf]
+        best_nll  = [np.inf]
         best_vals = [None]
 
         def objective(values: np.ndarray) -> float:
@@ -603,7 +728,10 @@ class DecisionModel:
         def callback(xk: np.ndarray, convergence: float) -> None:
             iteration[0] += 1
             params_str = "  ".join(f"{k}={v:.4f}" for k, v in zip(specs.keys(), best_vals[0]))
-            logger.info("Iter %3d | NLL=%.4f | convergence=%.4f | %s", iteration[0], best_nll[0], convergence, params_str)
+            logger.info(
+                "Iter %3d | NLL=%.4f | convergence=%.4f | %s",
+                iteration[0], best_nll[0], convergence, params_str,
+            )
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -636,25 +764,14 @@ class DecisionModel:
     def simulate(
         self,
         stimulus: np.ndarray,
-        params: DDMParams | None = None,
+        params: dict | None = None,
         n_reps: int = 1,
         seed: int | None = None,
     ) -> dict[str, np.ndarray]:
-        """
-        Forward pass: generate simulated responses for a given stimulus.
-
-        Args:
-            stimulus: (n_trials, n_timepoints) array.
-            params:   DDMParams to use. Defaults to DDMParams() if None.
-            n_reps:   Independent repetitions to concatenate.
-            seed:     Optional RNG seed for reproducibility.
-
-        Returns:
-            Dict with keys 'rt', 'choice', 'coherence'.
-        """
+        """Forward pass: returns dict with rt, choice, coherence arrays."""
         if params is None:
-            params = DDMParams()
-        params.validate()
+            params = dict(DEFAULT_PARAMS)
+        validate_params(params)
 
         if seed is not None:
             np.random.seed(seed)
