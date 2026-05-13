@@ -25,6 +25,7 @@ set -euo pipefail
 SIF_FILE="${SIF_FILE:-}"
 PRIOR_COND="${PRIOR_COND:-equal_only}"
 OUTCOME_FILTER="${OUTCOME_FILTER:-correct_only}"
+# OUTCOME_FILTER="${OUTCOME_FILTER:-all}"
 QOS_LIMIT="${QOS_LIMIT:-2000}"        # max array tasks allowed in queue
 MODEL_START_IDX="${MODEL_START_IDX:-0}"
 
