@@ -1,7 +1,0 @@
-python3 /src/scripts/ddm/validate_refactor.py --device cpu --n_trials 200 --n_reps 5 2>&1
-
-
-cd /src/scripts/ddm && python3 validate_refactor.py --device cuda --n_trials 200 --n_reps 5 2>&1
-
-# New module verify both devices simultaneously
-cd /src/scripts/ddm && python3 validate_both_devices.py --skip-cuda --n_trials 200 --bench-reps 3 2>&1

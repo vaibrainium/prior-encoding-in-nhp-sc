@@ -505,101 +505,6 @@ class LikelihoodCalculator:
             # NEVER let optimizer crash
             return 1e6
 
-
-class LikelihoodCalculatorOld:
-    """
-    Combined NLL from choice proportions + RT quantile term.
-
-    Uses KL-divergence multinomial NLL for the RT term when enough predicted
-    trials are available (>= sparse_threshold); falls back to quantile MSE
-    otherwise.
-
-    Args:
-        nbins:            RT bins (nbins+1 equal-mass bins from data quantiles).
-        rt_weight:        Scalar for the MSE fallback only.
-        sparse_threshold: Min predicted trials required for the KL path.
-        p_min:            Choice prob floor/ceiling to prevent degenerate NLL.
-    """
-
-    def __init__(
-        self,
-        nbins: int = 5,
-        rt_weight: float = 1.0,
-        sparse_threshold: int = 2,
-        p_min: float = 0.05,
-    ):
-        self.nbins            = nbins
-        self.rt_weight        = rt_weight
-        self.sparse_threshold = sparse_threshold
-        self.p_min            = p_min
-        self.eps              = 1e-12
-        self._q_grid   = np.linspace(1 / (nbins + 1), nbins / (nbins + 1), nbins)
-        self._mse_grid = np.linspace(0.1, 0.9, nbins)
-
-    def _rt_nll(self, rt_data: np.ndarray, rt_pred: np.ndarray) -> float:
-        n_bins     = self.nbins + 1
-        boundaries = (
-            np.quantile(rt_data, self._q_grid)
-            if rt_data.size >= self.nbins
-            else np.array([rt_data.min(), rt_data.max()])
-        )
-
-        if rt_pred.size >= self.sparse_threshold:
-            obs_counts  = np.bincount(np.searchsorted(boundaries, rt_data),  minlength=n_bins).astype(float)
-            pred_counts = np.bincount(np.searchsorted(boundaries, rt_pred), minlength=n_bins).astype(float)
-            obs_p  = (obs_counts  + self.eps) / (obs_counts.sum()  + self.eps * n_bins)
-            pred_p = (pred_counts + self.eps) / (pred_counts.sum() + self.eps * n_bins)
-            return float(np.sum(obs_counts * (np.log(obs_p) - np.log(pred_p))))
-
-        # sparse fallback: quantile MSE
-        data_q = np.quantile(rt_data, self._mse_grid)
-        pred_q = np.quantile(rt_pred, self._mse_grid)
-        return self.rt_weight * rt_data.size * float(np.mean((data_q - pred_q) ** 2))
-
-    def calculate_likelihood(
-        self,
-        rt_pred: np.ndarray,
-        choice_pred: np.ndarray,
-        rt_data: np.ndarray,
-        choice_data: np.ndarray,
-        coherences_pred: np.ndarray,
-        coherences_data: np.ndarray,
-    ) -> float:
-        if rt_pred.size == 0 or rt_data.size == 0:
-            return 1e6
-
-        vp = ~(np.isnan(rt_pred)  | np.isnan(choice_pred))
-        vd = ~(np.isnan(rt_data)  | np.isnan(choice_data))
-        if not (vp.any() and vd.any()):
-            return 1e6
-
-        rt_pred, choice_pred, coh_pred = rt_pred[vp], choice_pred[vp], coherences_pred[vp]
-        rt_data, choice_data, coh_data = rt_data[vd], choice_data[vd], coherences_data[vd]
-
-        total = 0.0
-        for coh in np.unique(coh_data):
-            dm = coh_data == coh
-            pm = coh_pred == coh
-            if not (dm.any() and pm.any()):
-                continue
-
-            for cv in np.unique(choice_data):
-                n_obs = int(np.sum(choice_data[dm] == cv))
-                if n_obs == 0:
-                    continue
-
-                p_pred = float(np.mean(choice_pred[pm] == cv))
-                p_pred = np.clip(p_pred, self.p_min, 1.0 - self.p_min)
-                total -= n_obs * np.log(p_pred)
-
-                rt_d = rt_data[dm & (choice_data == cv)]
-                rt_p = rt_pred[pm & (choice_pred == cv)]
-                if rt_d.size >= 3 and rt_p.size >= 3:
-                    total += self._rt_nll(rt_d, rt_p)
-
-        return float(total) if np.isfinite(total) else 1e6
-
-
 # ---------------------------------------------------------------------------
 # Abstract fitting engine
 # ---------------------------------------------------------------------------
@@ -705,7 +610,7 @@ class DecisionModel:
         n_iterations, optimization_result.
         """
         if verbose:
-            logger.info("Starting optimisation (%s)...", type(self).__name__)
+            logger.info("Starting optimization (%s)...", type(self).__name__)
 
         specs  = self.param_specs
         bounds = [s.bounds for s in specs.values()]
@@ -749,7 +654,7 @@ class DecisionModel:
         best = dict(zip(specs.keys(), result.x))
 
         if verbose:
-            logger.info("Optimisation done. Cost: %.4f", result.fun)
+            logger.info("Optimization done. Cost: %.4f", result.fun)
             for name, val in best.items():
                 logger.info("  %s = %.4f", name, val)
 
