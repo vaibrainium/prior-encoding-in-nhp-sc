@@ -590,7 +590,7 @@ class DecisionModel:
         return {
             "rt":        np.concatenate(all_rt),
             "choice":    np.concatenate(all_choice),
-            "coherence": np.concatenate(all_coh),
+            "signed_coherence": np.concatenate(all_coh),
         }
 
     def fit(
@@ -691,5 +691,5 @@ class DecisionModel:
         return {
             "rt":        np.concatenate(all_rt)     if n_reps > 1 else all_rt[0],
             "choice":    np.concatenate(all_choice) if n_reps > 1 else all_choice[0],
-            "coherence": np.tile(stimulus[:, COH_COL], n_reps) if n_reps > 1 else stimulus[:, COH_COL],
+            "signed_coherence": np.tile(stimulus[:, COH_COL], n_reps) if n_reps > 1 else stimulus[:, COH_COL],
         }
