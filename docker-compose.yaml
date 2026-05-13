@@ -11,18 +11,7 @@ services:
       - ./:/src/
       - "${DATAPATH}:/mnt/prior-data"
 
-    command: >
-      bash -c "
-        pip uninstall -y ssm &&
-        pip install --upgrade --force-reinstall --no-cache-dir numpy cython &&
-        pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git &&
-        RUN pip install torch==2.4.1+cu121 --extra-index-url https://download.pytorch.org/whl/cu121
-        pip install -r requirements.txt &&
-        pip uninstall -y numpy &&
-        pip install --no-cache-dir numpy &&
-        pip install --upgrade --force-reinstall cython scipy matplotlib pandas &&
-        jupyter lab --ip=0.0.0.0 --no-browser --allow-root
-      "
+    command: jupyter lab --ip=0.0.0.0 --no-browser --allow-root
 
     deploy:
       resources:
