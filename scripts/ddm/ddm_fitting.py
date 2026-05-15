@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import traceback
+import json
+from datetime import datetime
 
 from config import dir_config
 from src.ddm.ddm import DEFAULT_PARAMS, DecisionModel, ParamSpec, validate_params
@@ -193,11 +196,41 @@ def save_results(output_dir: Path, session_id, prior_block, model, result, job):
         }, f,
         )
 
-    print(f"Saved: {out_path}")
+    logger.info(f"Saved: {out_path}")
+
+
+def save_failure(output_dir, session_id, prior_block, job, stage, error):
+    fail_path = output_dir / f"{session_id}_prior_block_{prior_block}.FAILED.json"
+
+    payload = {
+        "session_id": session_id,
+        "prior_block": prior_block,
+        "job": job,
+        "stage": stage,
+        "error": str(error),
+        "traceback": traceback.format_exc(),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    with open(fail_path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+    logger.error(f"[FAILED] {stage} → {fail_path}")
 
 
 if __name__ == "__main__":
+    import logging
+    import sys
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    logger = logging.getLogger(__name__)
     # ----------------------------
     # args
     # ----------------------------
@@ -231,44 +264,43 @@ if __name__ == "__main__":
     enable_leak = job["enable_leak"]
     enable_time_constant = job["enable_time_constant"]
 
+
+
+    logger.info(f"[START] job_id={args.job_id}:  Session ID - {session_id}, Prior Block - {prior_block}, Enable Leak - {enable_leak}, Enable Time Constant - {enable_time_constant}")
+
     # ----------------------------
     # output dir
     # ----------------------------
-    output_dir = get_output_dir(
-        ddm_dir,
-        enable_leak,
-        enable_time_constant,
-    )
+    output_dir = get_output_dir(ddm_dir, enable_leak, enable_time_constant)
+    logger.info(f"Output directory: {output_dir}")
 
     # ----------------------------
     # prepare data
     # ----------------------------
-    data = prepare_data(
-        behavior_df,
-        session_id,
-        prior_block,
-    )
+    try:
+        data = prepare_data(behavior_df, session_id, prior_block)
 
-    stimulus = build_stimulus(data)
-
+        stimulus = build_stimulus(data)
+    except Exception as e:
+        logger.error(f"[FAILED] data_prep: {e}")
+        save_failure(output_dir, session_id, prior_block, job, "data_prep", e)
+        raise
     # ----------------------------
     # fit
     # ----------------------------
-    model, result = fit_model(
-        data,
-        stimulus,
-        enable_leak,
-        enable_time_constant,
-    )
+    try:
+        model, result = fit_model(data, stimulus, enable_leak, enable_time_constant)
+    except Exception as e:
+        logger.error(f"[FAILED] fit_model: {e}")
+        save_failure(output_dir, session_id, prior_block, job, "fit_model", e)
+        raise
 
     # ----------------------------
     # save
     # ----------------------------
-    save_results(
-        output_dir,
-        session_id,
-        prior_block,
-        model,
-        result,
-        job,
-    )
+    try:
+        save_results(output_dir, session_id, prior_block, model, result, job)
+    except Exception as e:
+        logger.error(f"[FAILED] save_results: {e}")
+        save_failure(output_dir, session_id, prior_block, job, "save_results", e)
+        raise
