@@ -1,72 +1,20 @@
-"""
-ddm_simple.py — Simplified DDM simulation and fitting engine.
-
-Classes
--------
-ParamSpec        (default, bounds) for a free parameter
-LikelihoodCalculator  quantile-based NLL
-DecisionModel    abstract fitting engine (subclass in ddm_model.py)
-
-Parameters are passed as plain dicts. Use DEFAULT_PARAMS as a base and
-override keys as needed. validate_params() checks required fields.
-"""
 
 from __future__ import annotations
-
 import logging
 import warnings
 from dataclasses import dataclass  # still used by ParamSpec
-
+from typing import Tuple
 import numpy as np
 import torch
+from numba import jit, prange
 from scipy.optimize import differential_evolution
-
-from .simulator import DriftDiffusionSimulator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-COH_COL: int = 0  # column index of coherence in the stimulus array
+ENTROPY_THRESHOLD = 0.2  # empirically determined threshold for low RT entropy
 
 
-# ---------------------------------------------------------------------------
-# Parameters as plain dict
-# ---------------------------------------------------------------------------
-
-DEFAULT_PARAMS: dict = {
-    "ndt":          0.1,
-    "a":            2.0,
-    "z":            0.5,
-    "drift_gain":   7.0,
-    "drift_offset": 0.0,
-    "variance":     1.0,
-    "dt":           0.001,
-    "leak_rate":    0.0,
-    "time_constant": 0.0,
-}
-
-
-def validate_params(p: dict) -> None:
-    if not (0 < p["a"] < 10):
-        raise ValueError(f"Invalid boundary separation: {p['a']}")
-    if not (0 < p["z"] < 1):
-        raise ValueError(f"Invalid starting point: {p['z']}")
-    if not (0 < p["dt"] < 0.01):
-        raise ValueError(f"Invalid time step: {p['dt']}")
-    if p["ndt"] < 0:
-        raise ValueError(f"Invalid non-decision time: {p['ndt']}")
-
-
-@dataclass
-class ParamSpec:
-    """Default value and (lo, hi) bounds for a single free parameter."""
-    default: float
-    bounds: tuple[float, float]
-
-
-# ---------------------------------------------------------------------------
-# Likelihood calculator
-# ---------------------------------------------------------------------------
 class LikelihoodCalculator:
     """
     Joint multinomial NLL (KL divergence over choice × RT bins per coherence)
@@ -84,20 +32,19 @@ class LikelihoodCalculator:
         p_min: float = 1e-6,
         caf_weight: float = 1.0,
         caf_bins: int = 5,
-        rt_var_weight: float = 0.0,   # <-- add this
-        rt_weight=None,           # legacy (ignored)
-        sparse_threshold=None,    # legacy (ignored)
-        **kwargs
+        rt_var_weight: float = 0.0,
+        stability_weight: float = 0.1,
     ):
         self.nbins      = nbins
         self.p_min      = p_min
         self.caf_weight = caf_weight
         self.caf_bins   = caf_bins
+        self.stability_weight = stability_weight
         self.rt_var_weight = rt_var_weight
         self.eps        = 1e-12
         self._q_grid    = np.linspace(1/(nbins+1), nbins/(nbins+1), nbins)
 
-        if rt_weight is not None or sparse_threshold is not None or kwargs:
+        if rt_var_weight is not None or kwargs:
             warnings.warn(
                 "Deprecated likelihood parameters (rt_weight, sparse_threshold, etc.) "
                 "are ignored in JointLikelihoodCalculator.",
@@ -107,6 +54,50 @@ class LikelihoodCalculator:
     # ----------------------------
     # Helpers
     # ----------------------------
+
+    def _distribution_stability(self, rt_d, ch_d, rt_p, ch_p) -> float:
+        eps = 1e-12
+
+        # -------------------------
+        # 1. RT entropy mismatch
+        # -------------------------
+        def entropy(x):
+            hist, _ = np.histogram(x, bins=10)
+            p = hist / (hist.sum() + eps)
+            p = p[p > 0]
+            return -np.sum(p * np.log(p + eps))
+
+        ent_d = entropy(rt_d)
+        ent_p = entropy(rt_p)
+
+        entropy_term = (ent_d - ent_p) ** 2
+
+        # -------------------------
+        # 2. Coverage mismatch
+        # (how much of RT space is actually used)
+        # -------------------------
+        coverage_d = (np.max(rt_d) - np.min(rt_d)) if len(rt_d) > 1 else 0.0
+        coverage_p = (np.max(rt_p) - np.min(rt_p)) if len(rt_p) > 1 else 0.0
+
+        coverage_term = (coverage_d - coverage_p) ** 2
+
+        # -------------------------
+        # 3. Choice entropy mismatch
+        # -------------------------
+        def choice_entropy(ch):
+            if len(ch) == 0:
+                return 0.0
+            vals, counts = np.unique(ch, return_counts=True)
+            p = counts / counts.sum()
+            return -np.sum(p * np.log(p + eps))
+
+        choice_term = (choice_entropy(ch_d) - choice_entropy(ch_p)) ** 2
+
+        return (
+            self.stability_weight *
+            (entropy_term + 0.5 * coverage_term + 0.5 * choice_term)
+        )
+
     def _valid_mask(self, rt, choice):
         return np.isfinite(rt) & np.isfinite(choice)
 
@@ -203,10 +194,15 @@ class LikelihoodCalculator:
         # normalize by n_bins so weight is interpretable regardless of n coherences
         return self.rt_var_weight * len(rt_data) * (total / n_bins)
 
+    def _rt_entropy(self, rt: np.ndarray) -> float:
+        hist, _ = np.histogram(rt, bins=10)
+        p = hist / (hist.sum() + 1e-12)
+        p = p[p > 0]
+        return -np.sum(p * np.log(p))
     # ----------------------------
     # Main likelihood
     # ----------------------------
-    def calculate_likelihood(
+    def compute_nll(
         self,
         rt_pred, choice_pred,
         rt_data, choice_data,
@@ -248,24 +244,27 @@ class LikelihoodCalculator:
                 pm = coh_pred == coh
 
                 if not (dm.any() and pm.any()):
-                    continue
+                    return 1e6
 
                 rt_d, ch_d = rt_data[dm], choice_data[dm]
                 rt_p, ch_p = rt_pred[pm], choice_pred[pm]
 
                 # guard against tiny samples
                 if len(rt_d) < 5 or len(rt_p) < 5:
-                    continue
+                    logger.warning(f"Coherence {coh}: too few valid trials (data={len(rt_d)}, pred={len(rt_p)}), skipping.")
+                    return 1e6
 
                 # skip degenerate RT distributions
                 if np.all(rt_d == rt_d[0]):
-                    continue
+                    logger.warning(f"Coherence {coh}: degenerate RT distribution in data, skipping.")
+                    return 1e6
 
                 # compute quantile bins safely
                 try:
                     boundaries = np.quantile(rt_d, self._q_grid)
                 except Exception:
-                    continue
+                    logger.warning(f"Coherence {coh}: failed to compute quantile boundaries, skipping.")
+                    return 1e6
 
                 # FIXED: use data-defined choice set
                 choice_vals = np.unique(ch_d)
@@ -274,7 +273,8 @@ class LikelihoodCalculator:
                 pred_counts = self._joint_counts(rt_p, ch_p, boundaries, choice_vals)
 
                 if obs_counts.sum() == 0 or pred_counts.sum() == 0:
-                    continue
+                    logger.warning(f"Coherence {coh}: zero counts in observed or predicted data, skipping.")
+                    return 1e6
 
                 K = len(obs_counts)
 
@@ -290,6 +290,11 @@ class LikelihoodCalculator:
 
                 if not np.isfinite(kl):
                     return 1e6
+
+                entropy_d = self._rt_entropy(rt_d)
+                if entropy_d < ENTROPY_THRESHOLD:
+                    logger.warning(f"Coherence {coh}: very low RT entropy in data ({entropy_d:.4f}), skipping.")
+                    total += 500
 
                 total += kl
 
@@ -307,191 +312,13 @@ class LikelihoodCalculator:
                     rt_pred, coh_pred,
                 )
 
+
+            if self.stability_weight > 0:
+                total += self._distribution_stability(rt_data, choice_data, rt_pred, choice_pred)
+
             return float(total) if np.isfinite(total) else 1e6
 
+
+
         except Exception:
-            # NEVER let optimizer crash
             return 1e6
-
-# ---------------------------------------------------------------------------
-# Abstract fitting engine
-# ---------------------------------------------------------------------------
-
-class DecisionModel:
-    """
-    Abstract DDM fitting engine. Subclass and implement:
-      - param_specs property  -> dict[str, ParamSpec]
-      - _build_params(values, condition_idx) -> DDMParams
-      - _objective_function(values, data, stimulus, n_reps, seed, l1_weight) -> float
-    """
-
-    def __init__(
-        self,
-        device: str | None = None,
-        likelihood_params: dict | None = None,
-    ):
-        self.simulator = DriftDiffusionSimulator(device=device)
-
-        lp = likelihood_params or {}
-        self.likelihood_calc = LikelihoodCalculator(
-            nbins=lp.get("nbins", 5),
-            caf_weight=lp.get("caf_weight", 0.0),
-            caf_bins=lp.get("caf_bins", 5),
-        )
-        logger.info(
-            "Initialized %s | device=%s",
-            type(self).__name__,
-            getattr(self.simulator, "device", "CPU"),
-        )
-
-    @property
-    def param_specs(self) -> dict[str, ParamSpec]:
-        raise NotImplementedError
-
-    def _build_params(self, values: np.ndarray, condition_idx: int | None = None) -> dict:
-        raise NotImplementedError
-
-    def _objective_function(
-        self,
-        values: np.ndarray,
-        data: dict,
-        stimulus: np.ndarray,
-        n_reps: int,
-        seed: int,
-        l1_weight: float,
-    ) -> float:
-        raise NotImplementedError
-
-    def _simulate_condition(
-        self,
-        stimulus: np.ndarray,
-        params: dict,
-        n_reps: int,
-    ) -> dict | None:
-        """
-        Run n_reps simulations. Returns dict with rt/choice/coherence arrays,
-        or None if the simulation crashed or produced no valid trials.
-        """
-        all_rt, all_choice, all_coh = [], [], []
-        for _ in range(n_reps):
-            try:
-                rt, choice = self.simulator.simulate_trials(stimulus, params)
-            except Exception as exc:
-                logger.warning("Simulation failed: %s", exc)
-                return None
-            valid = (~np.isnan(rt)) & (~np.isnan(choice))
-            if valid.sum() < 5:
-                continue
-            all_rt.append(rt[valid])
-            all_choice.append(choice[valid])
-            all_coh.append(stimulus[valid, COH_COL])
-
-        if not all_rt:
-            return None
-
-        return {
-            "rt":        np.concatenate(all_rt),
-            "choice":    np.concatenate(all_choice),
-            "signed_coherence": np.concatenate(all_coh),
-        }
-
-    def fit(
-        self,
-        data: dict[str, np.ndarray],
-        stimulus: np.ndarray,
-        max_iterations: int = 100,
-        n_reps: int = 5,
-        seed: int = 42,
-        l1_weight: float = 0.01,
-        verbose: bool = True,
-    ) -> dict:
-        """
-        Fit parameters via differential evolution.
-
-        Returns dict with keys: success, parameters, likelihood,
-        n_iterations, optimization_result.
-        """
-        if verbose:
-            logger.info("Starting optimization (%s)...", type(self).__name__)
-
-        specs  = self.param_specs
-        bounds = [s.bounds for s in specs.values()]
-
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-
-        best_nll  = [np.inf]
-        best_vals = [None]
-
-        def objective(values: np.ndarray) -> float:
-            nll = self._objective_function(values, data, stimulus, n_reps, seed, l1_weight)
-            if nll < best_nll[0]:
-                best_nll[0] = nll
-                best_vals[0] = values.copy()
-            return nll
-
-        iteration = [0]
-
-        def callback(xk: np.ndarray, convergence: float) -> None:
-            iteration[0] += 1
-            params_str = "  ".join(f"{k}={v:.4f}" for k, v in zip(specs.keys(), best_vals[0]))
-            logger.info(
-                "Iter %3d | NLL=%.4f | convergence=%.4f | %s",
-                iteration[0], best_nll[0], convergence, params_str,
-            )
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = differential_evolution(
-                objective,
-                bounds=bounds,
-                maxiter=max_iterations,
-                popsize=10,
-                seed=seed,
-                polish=True,
-                disp=False,
-                callback=callback if verbose else None,
-            )
-
-        best = dict(zip(specs.keys(), result.x))
-
-        if verbose:
-            logger.info("Optimization done. Cost: %.4f", result.fun)
-            for name, val in best.items():
-                logger.info("  %s = %.4f", name, val)
-
-        return {
-            "success":              result.success,
-            "parameters":          best,
-            "likelihood":          result.fun,
-            "n_iterations":        result.nit,
-            "optimization_result": result,
-        }
-
-    def simulate(
-        self,
-        stimulus: np.ndarray,
-        params: dict | None = None,
-        n_reps: int = 1,
-        seed: int | None = None,
-    ) -> dict[str, np.ndarray]:
-        """Forward pass: returns dict with rt, choice, coherence arrays."""
-        if params is None:
-            params = dict(DEFAULT_PARAMS)
-        validate_params(params)
-
-        if seed is not None:
-            np.random.seed(seed)
-            torch.manual_seed(seed)
-
-        all_rt, all_choice = [], []
-        for _ in range(n_reps):
-            rt, choice = self.simulator.simulate_trials(stimulus, params)
-            all_rt.append(rt)
-            all_choice.append(choice)
-
-        return {
-            "rt":        np.concatenate(all_rt)     if n_reps > 1 else all_rt[0],
-            "choice":    np.concatenate(all_choice) if n_reps > 1 else all_choice[0],
-            "signed_coherence": np.tile(stimulus[:, COH_COL], n_reps) if n_reps > 1 else stimulus[:, COH_COL],
-        }
