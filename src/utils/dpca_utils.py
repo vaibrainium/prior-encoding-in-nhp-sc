@@ -3,17 +3,19 @@ Modular dPCA utilities for fitting, cross-period projection, and neuron/trial su
 
 Key public functions
 --------------------
-extract_hmm_state_trial_info – build biased/unbiased trial-info dicts from HMM posteriors
-extract_block_trial_info     – build equal/unequal trial-info dicts from prob_toRF
-dpca_transform               – project data onto fitted dPCA axes, compute explained variance
-create_dpca_matrix           – build trial-averaged + trial-wise data matrices
-clean_dpca_data              – remove NaN-polluted timepoints (fit-safe vs. full variant)
-fit_dpca_on_alignment        – fit one dPCA model on one alignment period
-fit_dpca_all_alignments      – fit one model per alignment period
-cross_period_projection      – for each fitted-period model, project all alignment periods
-build_time_axes              – map alignment names → ms time vectors matching cleaned data
-get_neuron_ids               – filter neurons by session / classification / leave-out fraction
-split_trial_info_half        – 50/50 random trial split for fit-vs-test workflows
+extract_hmm_state_trial_info          – build biased/unbiased trial-info dicts from HMM posteriors
+extract_block_trial_info              – build equal/unequal trial-info dicts from prob_toRF
+dpca_transform                        – project data onto fitted dPCA axes, compute explained variance
+create_dpca_matrix                    – build trial-averaged + trial-wise data matrices
+clean_dpca_data                       – remove NaN-polluted timepoints (fit-safe vs. full variant)
+fit_dpca_on_alignment                 – fit one dPCA model on one alignment period
+fit_dpca_all_alignments               – fit one model per alignment period
+cross_period_projection               – for each fitted-period model, project all alignment periods
+build_time_axes                       – map alignment names → ms time vectors matching cleaned data
+get_neuron_ids                        – filter neurons by session / classification / leave-out fraction
+split_trial_info_half                 – 50/50 random trial split for fit-vs-test workflows
+dpca_significance_analysis            – nearest-centroid significance masks with shuffled null;
+                                        pass key_groups={'s': [[0,1],[2,3]]} for binary low/high test
 
 Condition dimension (first non-neuron axis)
 -------------------------------------------
@@ -560,3 +562,262 @@ def split_trial_info_half(state_trial_info, sessions, seed=None):
             half2[state][session_id] = df.iloc[idx[mid:]].reset_index(drop=True)
 
     return half1, half2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Significance analysis
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _flat2d(A):
+    return A.reshape((A.shape[0], -1))
+
+
+def _classification(class_means, test, groups=None):
+    """Nearest-centroid decoder: fraction of test points assigned to correct class.
+
+    groups : list of lists, e.g. [[0,1],[2,3]] to collapse Q conditions into 2 classes.
+             Each sub-list gives the condition indices belonging to that class.
+             Centroids are computed as the mean of class_means over those indices.
+             If None, each condition is its own class (standard Q-class decoder).
+    """
+    if groups is not None:
+        centroids = np.stack(
+            [np.nanmean(class_means[g], axis=0) for g in groups]
+        )                                                               # (n_groups, T)
+        true_group = np.array([gi for gi, g in enumerate(groups) for _ in g])  # (Q,)
+        distances = np.abs(test[:, None, :] - centroids[None, :, :])  # (Q, n_groups, T)
+        nearest = np.argmin(distances, axis=1)                         # (Q, T)
+        correct = nearest == true_group[:, None]                       # (Q, T)
+    else:
+        distances = np.abs(test[:, None, :] - class_means[None, :, :])  # (Q, Q, T)
+        nearest = np.argmin(distances, axis=1)                          # (Q, T)
+        correct = nearest == np.arange(class_means.shape[0])[:, None]  # (Q, T)
+    performance = correct.mean(axis=0).astype(float)
+    performance[np.any(np.isnan(test), axis=0)] = np.nan
+    return performance
+
+
+def _denoise_mask(mask, n_consecutive):
+    """Zero-out runs shorter than n_consecutive in an int32 mask (in-place)."""
+    subseq = 0
+    N = mask.shape[0]
+    for n in range(N):
+        if mask[n] == 1:
+            subseq += 1
+        else:
+            if subseq < n_consecutive:
+                for k in range(n - subseq, n):
+                    mask[k] = 0
+            subseq = 0
+    return mask
+
+
+def _dpca_train_test_split(dpca, X, trialX):
+    """Leave-one-out train/validation split on the trial-wise data."""
+    protect = dpca.protect
+    n_unprotect = len(X.shape) - len(protect) if protect is not None else len(X.shape)
+    n_protect   = len(protect) if protect is not None else 0
+
+    protected = dpca._check_protected(trialX, protect)
+    if ~protected:
+        axes = [dpca.labels.index(ax) + 2 for ax in protect]
+        trialX = dpca._roll_back(trialX, axes)
+        X = np.squeeze(dpca._roll_back(X[None, ...], axes))
+
+    N_samples = dpca._get_n_samples(trialX, protect=dpca.protect)
+    idx = (np.random.rand(*N_samples.shape) * N_samples).astype(int)
+
+    blindX = np.empty(trialX.shape[1:])
+    it = np.nditer(np.empty(N_samples.shape), flags=['multi_index'])
+    while not it.finished:
+        blindX[it.multi_index + (np.s_[:],) * n_protect] = trialX[
+            (idx[it.multi_index],) + it.multi_index + (np.s_[:],) * n_protect
+        ]
+        it.iternext()
+
+    trainX = (
+        X * (N_samples / (N_samples - 1))[(np.s_[:],) * n_unprotect + (None,) * n_protect]
+        - np.where(np.isnan(blindX), X, blindX)
+        / (N_samples - 1)[(np.s_[:],) * n_unprotect + (None,) * n_protect]
+    )
+
+    if ~protected:
+        blindX = dpca._roll_back(blindX[..., None], axes, invert=True)[..., 0]
+        trainX = dpca._roll_back(trainX[..., None], axes, invert=True)[..., 0]
+
+    trainX -= np.nanmean(_flat2d(trainX), 1)[(np.s_[:],) + (None,) * (len(X.shape) - 1)]
+    blindX -= np.nanmean(_flat2d(blindX), 1)[(np.s_[:],) + (None,) * (len(X.shape) - 1)]
+    return trainX, blindX
+
+
+def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
+    """Run n_splits train/test splits and average classification scores.
+
+    key_groups : dict[key → groups] passed to _classification for binary grouping,
+                 e.g. {'s': [[0,1],[2,3]]} to test low vs high coherence.
+    """
+    K = X.shape[-1]
+    if isinstance(dpca.n_components, int):
+        scores = {key: np.empty((dpca.n_components, n_splits, K)) for key in keys}
+    else:
+        scores = {key: np.empty((dpca.n_components[key], n_splits, K)) for key in keys}
+
+    for shuffle in range(n_splits):
+        trainX, validX = _dpca_train_test_split(dpca, X, trialX)
+        dpca.fit(trainX)
+        dpca, trainZ = dpca_transform(dpca, trainX)
+        dpca, validZ = dpca_transform(dpca, validX)
+
+        for key in keys:
+            ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]
+            axset = dpca.marginalizations[key]
+            axset = axset if isinstance(axset, set) else set.union(*axset)
+            # Always exclude the time axis so scores are resolved over time, not collapsed to a
+            # scalar. Without this exclusion, time gets averaged and the score is broadcast to a
+            # flat line across all K timepoints.
+            time_axis = len(X.shape) - 2
+            axes = set(range(len(X.shape) - 1)) - axset - {time_axis}
+            for ax in list(axes)[::-1]:
+                trainZ[key] = np.nanmean(trainZ[key], axis=ax + 1)
+                validZ[key] = np.nanmean(validZ[key], axis=ax + 1)
+            trainZ[key] = trainZ[key].reshape((ncomps, -1, K))
+            validZ[key] = validZ[key].reshape((ncomps, -1, K))
+
+        for key in keys:
+            ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]
+            groups = key_groups.get(key) if key_groups else None
+            for comp in range(ncomps):
+                scores[key][comp, shuffle] = _classification(
+                    trainZ[key][comp], validZ[key][comp], groups=groups
+                )
+
+    for key in keys:
+        scores[key] = np.nanmean(scores[key], axis=1)
+    return scores
+
+
+def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
+    """Single shuffle iteration for parallel execution."""
+    import copy
+    dpca = copy.deepcopy(dpca)
+    trialX_s = dpca.shuffle_labels(trialX.copy())    # .copy() required: shuffle_labels writes in-place via Numba
+
+    # Avoid np.nanmean, which allocates ~mask (a bool array the same size as trialX_s).
+    # Instead: zero NaNs in-place, count non-NaN via (N - isnan.sum), then sum/count.
+    nan_mask = np.isnan(trialX_s)                    # bool, 1/4 the size of float32 trialX_s
+    trialX_s[nan_mask] = 0.0
+    count = nan_mask.shape[0] - nan_mask.sum(axis=0) # no ~nan_mask temporary
+    del nan_mask
+    X_s = trialX_s.sum(axis=0, dtype=np.float32) / np.maximum(count, 1).astype(np.float32)
+    X_s[count == 0] = np.nan
+    del count
+
+    no_nan = ~np.any(np.isnan(X_s), axis=tuple(range(X_s.ndim - 1)))
+    X_s = X_s[..., no_nan]
+    if no_nan.all():
+        trialX_trimmed = trialX_s                    # all timepoints valid: skip the extra copy
+    else:
+        trialX_trimmed = trialX_s[..., no_nan]
+    del trialX_s                                     # free shuffled array before compute_mean_score
+    dpca, Z = dpca_transform(dpca, X_s)
+    score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups)
+    return score, Z
+
+
+def dpca_significance_analysis(
+    dpca, X, trialX,
+    n_shuffles=100, n_splits=100, n_consecutive=10,
+    full=False, keys=None, n_jobs=-1,
+    key_groups=None,
+):
+    """Compute significance masks using a nearest-centroid classifier with shuffled null.
+
+    Parameters
+    ----------
+    dpca          : fitted dPCA model
+    X             : trial-averaged data (no NaNs), shape (n_neurons, *cond_dims, n_time)
+    trialX        : trial-wise data, shape (n_trials, n_neurons, *cond_dims, n_time)
+    n_shuffles    : shuffles to build null distribution
+    n_splits      : train/test splits per score estimate
+    n_consecutive : min consecutive significant timepoints required
+    full          : if True return (masks, true_score, shuffled_scores, shuffled_Z)
+    keys          : marginalizations to test; defaults to all non-time keys
+    n_jobs        : number of parallel jobs for shuffle loop (-1 = all cores)
+    key_groups    : dict[key → list of lists] for binary grouping of conditions, e.g.
+                    {'s': [[0,1],[2,3]]} classifies low (0%,6%) vs high (20%,50%) coherence
+                    instead of one-of-four. Data and trial structure stay unchanged;
+                    only the classification boundary changes.
+
+    Returns
+    -------
+    masks : dict[key] → (n_components, T) bool array
+    true_score : dict[key] → (n_components, T) float array  — classifier accuracy on real data
+    scores : dict[key] → list of (n_components, T) float arrays  — null distribution per shuffle
+    shuffled_transformed_data : list  — only returned when full=True
+    """
+    if dpca.opt_regularizer_flag:
+        print("Regularization not optimized yet; starting optimization now.")
+        dpca._optimize_regularization(X, trialX)
+
+    all_keys = list(dpca.marginalizations.keys())
+    time_key = dpca.labels[-1]
+    if keys is None:
+        keys = [k for k in all_keys if k != time_key]
+
+    # Cast to float32 to halve per-worker memory and allow ~2× more parallel workers.
+    X = X.astype(np.float32, copy=False)
+    trialX = trialX.astype(np.float32)
+
+    from joblib import Parallel, delayed
+    import os as _os
+
+    # Cap n_jobs so peak RAM stays within 80% of available memory.
+    # Peak per worker = 3× trialX: (1) .copy() for shuffle_labels, (2) _replace_nan() copy
+    # inside np.nanmean when NaNs are present, (3) boolean-index copy for NaN trimming.
+    try:
+        import psutil as _psutil
+        _mem_avail = _psutil.virtual_memory().available
+        _mem_per_worker = 3 * trialX.nbytes
+        _max_safe = max(1, int(_mem_avail * 0.8 / _mem_per_worker))
+        _n_cpu = _os.cpu_count() or 1
+        _requested = (_n_cpu + 1 + n_jobs) if n_jobs < 0 else n_jobs
+        _effective = min(_requested, _max_safe)
+        if _effective < _requested:
+            print(
+                f"  Capping n_jobs to {_effective} to avoid OOM "
+                f"(~{_mem_per_worker/1e9:.1f} GB/worker, {_mem_avail/1e9:.1f} GB free)",
+                flush=True,
+            )
+        n_jobs = _effective
+    except ImportError:
+        pass
+
+    print(f"Computing true score ({n_splits} splits)...", flush=True)
+    true_score = _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=key_groups)
+    print("True score done.")
+
+    print(f"Running {n_shuffles} shuffles ({n_jobs} parallel jobs)...", flush=True)
+    shuffle_results = Parallel(n_jobs=n_jobs, verbose=10, max_nbytes='1M')(
+        delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups)
+        for _ in range(n_shuffles)
+    )
+    print("Shuffles done. Computing masks...")
+    scores = {key: [r[0][key] for r in shuffle_results] for key in keys}
+    shuffled_transformed_data = [r[1] for r in shuffle_results]
+
+    masks = {key: np.full(true_score[key].shape, False) for key in keys}
+    for key in keys:
+        min_len = min(s.shape[1] for s in scores[key])
+        quantile_score = np.nanquantile(
+            np.dstack([s[:, :min_len] for s in scores[key]]), 0.95, axis=-1
+        )
+        masks[key][:, :min_len] = true_score[key][:, :min_len] > quantile_score
+
+    if n_consecutive > 1:
+        for key in keys:
+            for k in range(masks[key].shape[0]):
+                masks[key][k] = _denoise_mask(masks[key][k].astype(np.int32), n_consecutive)
+
+    if full:
+        return masks, true_score, scores, shuffled_transformed_data
+    return masks, true_score, scores
