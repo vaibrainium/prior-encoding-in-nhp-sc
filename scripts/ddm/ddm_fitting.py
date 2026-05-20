@@ -13,10 +13,16 @@ from config import dir_config
 from src.ddm.ddm import DEFAULT_PARAMS, DecisionModel, ParamSpec, validate_params
 
 
+DT               = 0.001
+CAF_WEIGHT       = 1
+CAF_BINS = 15
+RT_VAR_WEIGHT    = 1.0
+
 class DDMModel(DecisionModel):
 
-    def __init__(self, enable_leak: bool = False, enable_time_constant: bool = False):
-        super().__init__()
+    def __init__(self, enable_leak=False, enable_time_constant=False,
+                device='cpu', likelihood_params=None):
+        super().__init__(device=device, likelihood_params=likelihood_params)
         self.enable_leak = enable_leak
         self.enable_time_constant = enable_time_constant
 
@@ -158,8 +164,27 @@ def build_stimulus(data: pd.DataFrame) -> np.ndarray:
     return np.tile(
         data["signed_coherence"].to_numpy()[:, None],
         (1, stimulus_length)
-    ) / 100.0
+    )
 
+
+def data_verification(data: pd.DataFrame):
+
+    if data["rt"].isnull().any():
+        raise ValueError("Missing RT values")
+
+    if data["choice"].isnull().any():
+        raise ValueError("Missing choice values")
+
+    if data["signed_coherence"].isnull().any():
+        raise ValueError("Missing signed coherence values")
+
+    # rts should be in seconds
+    if data["rt"].max() > 10:
+        raise ValueError("RT values out of expected range (0.1s to 10s)")
+
+    # signed coherence should be between -1 and 1
+    if data["signed_coherence"].min() < -1 or data["signed_coherence"].max() > 1:
+        raise ValueError("Signed coherence values out of expected range (-1 to 1)")
 
 def fit_model(
     data: pd.DataFrame,
@@ -168,9 +193,17 @@ def fit_model(
     enable_time_constant: bool,
 ):
 
+    data_verification(data)
+
     model = DDMModel(
         enable_leak=enable_leak,
         enable_time_constant=enable_time_constant,
+        device='cuda',
+        likelihood_params={
+            "caf_weight": CAF_WEIGHT,
+            "caf_bins": CAF_BINS,
+            "rt_var_weight": RT_VAR_WEIGHT,
+            }
     )
 
     result = model.fit(
