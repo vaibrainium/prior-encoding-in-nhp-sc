@@ -7,6 +7,7 @@ services:
       - "${JUPYTER_PORT}:8888"
     environment:
       - "JUPYTER_PASSWORD=${JUPYTER_PASSWORD}"
+      - "PATH=/src/.venv/bin:$PATH"
     volumes:
       - ./:/src/
       - "${DATAPATH}:/mnt/prior-data"
@@ -21,7 +22,7 @@ services:
               capabilities: [gpu]
 
         limits:
-          memory: 35G
+          memory: 100G
 
 
 # pip uninstall -y ssm
