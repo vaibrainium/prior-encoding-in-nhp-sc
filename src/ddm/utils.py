@@ -3,6 +3,27 @@ import pandas as pd
 from typing import Tuple
 
 
+def prepare_data(
+    behavior_df: pd.DataFrame,
+    session_id,
+    prior_block,
+) -> pd.DataFrame:
+
+    data = behavior_df[
+        (behavior_df["session_id"] == session_id) &
+        (behavior_df["prior_block"] == prior_block)
+    ][["rt", "choice", "signed_coherence"]].copy()
+
+    if data.empty:
+        raise ValueError(
+            f"No data for session={session_id}, "
+            f"prior_block={prior_block}"
+        )
+
+    data["choice"] = data["choice"].astype(int)
+
+    return data
+
 def build_stimulus(data: pd.DataFrame) -> np.ndarray:
 
     stimulus_length = max(100, int(np.clip(data["rt"].max(), 0, 5) * 1000))
