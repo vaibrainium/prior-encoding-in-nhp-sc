@@ -221,6 +221,10 @@ def fit_model(
 def save_results(output_dir: Path, session_id, prior_block, model, result, job):
     out_path = (output_dir / f"{session_id}_prior_block_{prior_block}.pkl")
 
+    # if model is on gpu move it to cpu before saving
+    if model.device.type == "cuda":
+        model.to("cpu")
+
     with open(out_path, "wb") as f:
         pickle.dump({
                 "model": model,
