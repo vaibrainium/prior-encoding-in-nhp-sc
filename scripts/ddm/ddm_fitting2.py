@@ -19,6 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DT               = 0.001
 CAF_WEIGHT       = 1
@@ -43,7 +44,7 @@ class DDMModel(DecisionModel):
 
     def __init__(self, fixed_params, free_params, likelihood_params=None):
 
-        super().__init__(free_params=free_params, fixed_params=fixed_params, device=device, likelihood_params=likelihood_params)
+        super().__init__(free_params=free_params, fixed_params=fixed_params, device=DEVICE, likelihood_params=likelihood_params)
 
     def _objective_function(self, values, data, stimulus, n_reps, l1_weight):
         try:
@@ -177,8 +178,6 @@ def data_verification(data: pd.DataFrame):
 def fit_model(
     data: pd.DataFrame,
     stimulus: np.ndarray,
-    enable_leak: bool,
-    enable_time_constant: bool,
 ):
 
     data_verification(data)
@@ -198,7 +197,6 @@ def fit_model(
         stimulus=stimulus,
         n_reps=15,
         max_iterations=1000,
-        n_reps=15,
         l1_weight=0.0,
         verbose=True,
     )
@@ -208,6 +206,10 @@ def fit_model(
 
 def save_results(output_dir: Path, session_id, prior_block, model, result, job):
     out_path = (output_dir / f"{session_id}_prior_block_{prior_block}.pkl")
+
+    # if model is on gpu move it to cpu before saving
+    if model.device.type == "cuda":
+        model.to("cpu")
 
     with open(out_path, "wb") as f:
         pickle.dump({
@@ -310,7 +312,7 @@ if __name__ == "__main__":
     # fit
     # ----------------------------
     try:
-        model, result = fit_model(data, stimulus, enable_leak, enable_time_constant)
+        model, result = fit_model(data, stimulus)
     except Exception as e:
         logger.error(f"[FAILED] fit_model: {e}")
         save_failure(output_dir, session_id, prior_block, job, "fit_model", e)
