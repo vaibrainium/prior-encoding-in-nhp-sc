@@ -21,10 +21,13 @@ logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-DT               = 0.001
-CAF_WEIGHT       = 1
-CAF_BINS = 15
-RT_VAR_WEIGHT    = 1.0
+LIKELIHOOD_PARAMS = {
+    "chrono_weight": 1.5,
+    "caf_weight":    1.5,
+    "rt_var_weight": 0.0,
+    "caf_bins":      5,
+}
+
 FIXED_PARAMS = {
     "dt": FixedParam(0.001),
     "variance": FixedParam(1.0),
@@ -185,11 +188,7 @@ def fit_model(
     model = DDMModel(
     fixed_params=FIXED_PARAMS,
     free_params=FREE_PARAMS,
-    likelihood_params={
-        "caf_weight": CAF_WEIGHT,
-        "caf_bins": CAF_BINS,
-        "rt_var_weight": RT_VAR_WEIGHT,
-    }
+    likelihood_params=LIKELIHOOD_PARAMS,
 )
 
     result = model.fit(

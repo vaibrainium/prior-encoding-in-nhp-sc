@@ -70,7 +70,6 @@ class FixedParam:
     value: float
 
 
-
 # ---------------------------------------------------------------------------
 # Abstract fitting engine
 # ---------------------------------------------------------------------------
@@ -106,6 +105,7 @@ class DecisionModel:
             caf_weight=lp.get("caf_weight", 1.0),
             caf_bins=lp.get("caf_bins", 5),
             rt_var_weight=lp.get("rt_var_weight", 1.0),
+            chrono_weight=lp.get("chrono_weight", 2.0),
         )
         logger.info(
             "Initialized %s | device=%s",
