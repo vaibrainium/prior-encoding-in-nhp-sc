@@ -33,15 +33,27 @@ FIXED_PARAMS = {
     "variance": FixedParam(1.0),
 }
 
-FREE_PARAMS = {
+BASE_FREE_PARAMS = {
     "ndt": FreeParam(0.1, 1),
     "a": FreeParam(0.8, 6.0),
     "z": FreeParam(0.1, 0.9),
     "drift_gain": FreeParam(1.0, 10.0),
     "drift_offset": FreeParam(-5.0, 5.0),
-    "leak_rate": FreeParam(0.0, 0.3),
-    "time_constant": FreeParam(-2.0, 2.0),
 }
+
+
+def make_params(enable_leak: bool, enable_time_constant: bool):
+    free = dict(BASE_FREE_PARAMS)
+    fixed = dict(FIXED_PARAMS)
+    if enable_leak:
+        free["leak_rate"] = FreeParam(0.0, 0.3)
+    else:
+        fixed["leak_rate"] = FixedParam(0.0)
+    if enable_time_constant:
+        free["time_constant"] = FreeParam(-2.0, 2.0)
+    else:
+        fixed["time_constant"] = FixedParam(0.0)
+    return free, fixed
 
 class DDMModel(DecisionModel):
 
@@ -181,15 +193,19 @@ def data_verification(data: pd.DataFrame):
 def fit_model(
     data: pd.DataFrame,
     stimulus: np.ndarray,
+    enable_leak: bool = True,
+    enable_time_constant: bool = True,
 ):
 
     data_verification(data)
 
+    free_params, fixed_params = make_params(enable_leak, enable_time_constant)
+
     model = DDMModel(
-    fixed_params=FIXED_PARAMS,
-    free_params=FREE_PARAMS,
-    likelihood_params=LIKELIHOOD_PARAMS,
-)
+        fixed_params=fixed_params,
+        free_params=free_params,
+        likelihood_params=LIKELIHOOD_PARAMS,
+    )
 
     result = model.fit(
         data=data,
@@ -205,10 +221,6 @@ def fit_model(
 
 def save_results(output_dir: Path, session_id, prior_block, model, result, job):
     out_path = (output_dir / f"{session_id}_prior_block_{prior_block}.pkl")
-
-    # if model is on gpu move it to cpu before saving
-    if model.device.type == "cuda":
-        model.to("cpu")
 
     with open(out_path, "wb") as f:
         pickle.dump({
@@ -234,8 +246,18 @@ def save_failure(output_dir, session_id, prior_block, job, stage, error):
         "timestamp": datetime.now().isoformat(),
     }
 
+    class _NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+
     with open(fail_path, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, indent=2, cls=_NumpyEncoder)
 
     logger.error(f"[FAILED] {stage} → {fail_path}")
 
@@ -311,7 +333,7 @@ if __name__ == "__main__":
     # fit
     # ----------------------------
     try:
-        model, result = fit_model(data, stimulus)
+        model, result = fit_model(data, stimulus, enable_leak=enable_leak, enable_time_constant=enable_time_constant)
     except Exception as e:
         logger.error(f"[FAILED] fit_model: {e}")
         save_failure(output_dir, session_id, prior_block, job, "fit_model", e)
