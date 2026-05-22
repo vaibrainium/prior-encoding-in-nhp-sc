@@ -1,6 +1,10 @@
 import numpy as np
 import pandas as pd
 from typing import Tuple
+import pickle
+from pathlib import Path
+import io
+import torch
 
 
 def prepare_data(
@@ -69,3 +73,16 @@ def get_job(grid: list[dict], job_id: int) -> dict:
         )
 
     return grid[job_id]
+
+
+class CPUUnpickler(pickle.Unpickler):
+    """Remaps any CUDA storage to CPU when loading on a CPU-only machine."""
+    def find_class(self, module, name):
+        if module == "torch.storage" and name == "_load_from_bytes":
+            return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
+        return super().find_class(module, name)
+
+
+def load_model(path):
+    with open(path, "rb") as f:
+        return CPUUnpickler(f).load()
