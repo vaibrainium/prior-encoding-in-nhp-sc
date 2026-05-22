@@ -38,6 +38,8 @@ REQUIRED = {
     "dt",
     "leak_rate",
     "time_constant",
+    "sv",
+    "sz",
 }
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,10 @@ def validate_params(p: dict) -> None:
         raise ValueError(f"Invalid non-decision time: {p['ndt']}")
     if not (0 < p["variance"]):
         raise ValueError(f"Invalid variance: {p['variance']}")
+    if p["sv"] < 0:
+        raise ValueError(f"Invalid sv (drift variability): {p['sv']}")
+    if not (0 <= p["sz"] < 1):
+        raise ValueError(f"Invalid sz (starting point variability): {p['sz']}")
 
 @dataclass
 class FreeParam:

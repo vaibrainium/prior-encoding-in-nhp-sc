@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 def _simulate_ddm_trials_numba(
     stimulus: np.ndarray,
     noise: np.ndarray,
+    sv_draws: np.ndarray,   # (n_trials,) per-trial drift offset ~ N(0, sv)
+    z_offsets: np.ndarray,  # (n_trials,) per-trial z offset ~ Uniform(-sz/2, sz/2)
     drift_gain: float,
     drift_offset: float,
     a: float,
@@ -31,15 +33,17 @@ def _simulate_ddm_trials_numba(
     rt = np.full(n_trials, np.nan, dtype=np.float32)
     choice = np.full(n_trials, np.nan, dtype=np.float32)
 
-    starting_point = z * a
-
     for trial in prange(n_trials):
+        z_trial = min(0.99, max(0.01, z + z_offsets[trial]))
+        starting_point = z_trial * a
         evidence = starting_point
+        trial_drift_offset = drift_offset + sv_draws[trial]
+
         for t in range(1, n_timepoints):
             if np.isnan(stimulus[trial, t]):
                 break
 
-            drift = (drift_gain * stimulus[trial, t - 1] + drift_offset) * dt
+            drift = (drift_gain * stimulus[trial, t - 1] + trial_drift_offset) * dt
             leak  = leak_rate * (evidence - starting_point) * dt
             evidence += drift + noise[trial, t - 1] - leak
 
@@ -76,8 +80,14 @@ class _NumbaSimulator:
             noise = (unit_noise * noise_std).astype(np.float32)
         else:
             noise = np.random.normal(0.0, noise_std, (n_trials, n_timepoints - 1)).astype(np.float32)
+
+        sv = float(params.get("sv", 0.0))
+        sz = float(params.get("sz", 0.0))
+        sv_draws  = np.random.normal(0.0, sv,  n_trials).astype(np.float32) if sv > 0.0 else np.zeros(n_trials, dtype=np.float32)
+        z_offsets = (np.random.uniform(-0.5, 0.5, n_trials) * sz).astype(np.float32) if sz > 0.0 else np.zeros(n_trials, dtype=np.float32)
+
         return _simulate_ddm_trials_numba(
-            stim, noise,
+            stim, noise, sv_draws, z_offsets,
             params["drift_gain"], params["drift_offset"],
             params["a"], params["z"], params["ndt"], params["dt"],
             params["leak_rate"], params["time_constant"],
@@ -132,12 +142,26 @@ class _TorchSimulator:
         dt            = float(params["dt"])
         leak_rate     = float(params["leak_rate"])
         time_constant = float(params["time_constant"])
+        sv            = float(params.get("sv", 0.0))
+        sz            = float(params.get("sz", 0.0))
 
-        sp        = z * a
         noise_std = (variance * dt) ** 0.5
 
         valid     = ~torch.isnan(stim[:, 1:])                                          # (N, T)
         drift_inc = torch.nan_to_num((drift_gain * stim[:, :-1] + drift_offset) * dt)  # (N, T)
+
+        # sv: per-trial drift variability — add a constant offset to each trial's drift
+        if sv > 0.0:
+            sv_draws   = torch.randn(n_trials, 1, device=dev) * sv                    # (N, 1)
+            drift_inc  = drift_inc + sv_draws * dt                                    # broadcast over T
+
+        # sz: per-trial starting point variability — Uniform(z - sz/2, z + sz/2)
+        if sz > 0.0:
+            z_offsets = (torch.rand(n_trials, device=dev) - 0.5) * sz
+            z_trials  = torch.clamp(z + z_offsets, 0.01, 0.99)
+            sp        = (z_trials * a).unsqueeze(1)                                   # (N, 1)
+        else:
+            sp = z * a                                                                 # scalar
 
         if unit_noise is not None:
             # Cache the per-rep noise slice on GPU to avoid repeated CPU→GPU transfers.

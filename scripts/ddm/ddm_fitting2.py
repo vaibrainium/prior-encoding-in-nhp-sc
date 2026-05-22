@@ -34,11 +34,13 @@ FIXED_PARAMS = {
 }
 
 BASE_FREE_PARAMS = {
-    "ndt": FreeParam(0.1, 1),
-    "a": FreeParam(0.8, 6.0),
-    "z": FreeParam(0.1, 0.9),
-    "drift_gain": FreeParam(1.0, 10.0),
+    "ndt":          FreeParam(0.1,  1.0),
+    "a":            FreeParam(0.8,  6.0),
+    "z":            FreeParam(0.1,  0.9),
+    "drift_gain":   FreeParam(1.0, 10.0),
     "drift_offset": FreeParam(-5.0, 5.0),
+    "sv":           FreeParam(0.0,  3.0),  # between-trial drift variability
+    "sz":           FreeParam(0.0,  0.3),  # between-trial starting point variability (z units)
 }
 
 
