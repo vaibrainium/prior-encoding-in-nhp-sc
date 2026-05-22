@@ -74,31 +74,30 @@ class LikelihoodCalculator:
 
     def _chronometric_nll(self, rt_d, ch_d, rt_p, ch_p) -> float:
         """
-        Log-ratio mean RT mismatch per boundary choice.
+        Log-ratio mean RT mismatch per boundary choice, weighted equally.
 
-        Weighting by choice proportion ensures that rare choices (errors at high
-        coherence) receive proportional — rather than zero — gradient signal.
-        Without this, the KL at high-coherence conditions is dominated by the
-        majority choice and error-RT mismatch is effectively invisible.
+        Each boundary (correct and error) contributes equally regardless of how
+        rare it is. p_choice downweighting was suppressing error-RT signal ~20x
+        at high coherences, and the old mask_d < 3 guard silenced it entirely
+        (only ~1 error trial per coherence at ±0.5 coherence).
         """
         total = 0.0
-        n_d   = len(ch_d)
+        n_choices = 0
 
         for choice_val in [0, 1]:
             mask_d = ch_d == choice_val
             mask_p = ch_p == choice_val
 
-            if mask_d.sum() < 3 or mask_p.sum() < 3:
+            if mask_d.sum() < 1 or mask_p.sum() < 3:
                 continue
 
             mrt_d = np.mean(rt_d[mask_d])
             mrt_p = np.mean(rt_p[mask_p])
 
-            # weight by choice proportion: equal contribution per trial, not per choice
-            p_choice = mask_d.sum() / n_d
-            total   += p_choice * (np.log(mrt_d + self.eps) - np.log(mrt_p + self.eps)) ** 2
+            total     += (np.log(mrt_d + self.eps) - np.log(mrt_p + self.eps)) ** 2
+            n_choices += 1
 
-        return total
+        return total / n_choices if n_choices > 0 else 0.0
 
     def _caf_nll(self, rt_data, ch_data, coh_data, rt_pred, ch_pred, coh_pred):
         """
