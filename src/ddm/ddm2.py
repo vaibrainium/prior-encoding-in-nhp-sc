@@ -201,7 +201,7 @@ class DecisionModel:
             valid = np.isfinite(sim["rt"]) & np.isfinite(sim["choice"])
             sim = sim.loc[valid]
 
-            if len(sim) < 5:
+            if len(sim) < 1:
                 continue
 
             simulations.append(sim)

@@ -70,7 +70,15 @@ class DDMModel(DecisionModel):
             return 1e6
         result = self._simulate_condition(stimulus, params, n_reps)
         if result is None:
-            return 1e6
+            # Zero crossings across all reps — degenerate parameters.
+            # Finite graduated penalty so DE sees a gradient and can escape:
+            #   more negative time_constant (urgency inversion) → larger penalty
+            #   higher leak_rate (evidence trapping) → larger penalty
+            tc = params.get("time_constant", 0.0)
+            lr = params.get("leak_rate", 0.0)
+            urgency_penalty = max(0.0, -tc) * 200.0   # 0 at tc=0, up to 400 at tc=-2
+            leak_penalty    = lr * 500.0               # 0 at lr=0, 150 at lr=0.3
+            return 500.0 + urgency_penalty + leak_penalty
         return self.likelihood_calc.compute_nll(
             result["rt"], result["choice"],
             np.asarray(data["rt"]), np.asarray(data["choice"]),
