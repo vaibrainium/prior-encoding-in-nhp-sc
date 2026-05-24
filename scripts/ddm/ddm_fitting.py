@@ -10,62 +10,76 @@ import json
 from datetime import datetime
 
 from config import dir_config
-from src.ddm.ddm import DEFAULT_PARAMS, DecisionModel, ParamSpec, validate_params
+from src.ddm.ddm import DecisionModel, FreeParam, FixedParam
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+LIKELIHOOD_PARAMS = {
+    "chrono_weight": 1.5,
+    "caf_weight":    1.5,
+    "rt_var_weight": 0.0,
+    "caf_bins":      5,
+}
+
+FIXED_PARAMS = {
+    "dt": FixedParam(0.001),
+    "variance": FixedParam(1.0),
+}
+
+BASE_FREE_PARAMS = {
+    "ndt":          FreeParam(0.1,  1.0),
+    "a":            FreeParam(0.8,  6.0),
+    "z":            FreeParam(0.1,  0.9),
+    "drift_gain":   FreeParam(1.0, 10.0),
+    "drift_offset": FreeParam(-5.0, 5.0),
+    "sv":           FreeParam(0.0,  3.0),  # between-trial drift variability
+    "sz":           FreeParam(0.0,  0.3),  # between-trial starting point variability (z units)
+}
 
 
-DT               = 0.001
-CAF_WEIGHT       = 1
-CAF_BINS = 15
-RT_VAR_WEIGHT    = 1.0
+def make_params(enable_leak: bool, enable_time_constant: bool):
+    free = dict(BASE_FREE_PARAMS)
+    fixed = dict(FIXED_PARAMS)
+    if enable_leak:
+        free["leak_rate"] = FreeParam(0.0, 0.3)
+    else:
+        fixed["leak_rate"] = FixedParam(0.0)
+    if enable_time_constant:
+        free["time_constant"] = FreeParam(-2.0, 2.0)
+    else:
+        fixed["time_constant"] = FixedParam(0.0)
+    return free, fixed
 
 class DDMModel(DecisionModel):
 
-    def __init__(self, enable_leak=False, enable_time_constant=False,
-                device='cpu', likelihood_params=None):
-        super().__init__(device=device, likelihood_params=likelihood_params)
-        self.enable_leak = enable_leak
-        self.enable_time_constant = enable_time_constant
+    def __init__(self, fixed_params, free_params, likelihood_params=None):
 
-    @property
-    def param_specs(self) -> dict[str, ParamSpec]:
-        return {
-            "ndt":           ParamSpec(0.2,  (0.1,  1.0)),
-            "a":             ParamSpec(2.0,  (0.8,  6.0)),
-            "z":             ParamSpec(0.5,  (0.1,  0.9)),
-            "drift_gain":    ParamSpec(7.0,  (1.0, 10.0)),
-            "drift_offset":  ParamSpec(0.0,  (-5.0, 5.0)),
-            "leak_rate":     ParamSpec(0.0,  (0.0,  1.0)),
-            "variance":      ParamSpec(1.0,  (0.5,  2.0)),
-            "time_constant": ParamSpec(0.0,  (-2.0, 2.0)),
-        }
+        super().__init__(free_params=free_params, fixed_params=fixed_params, device=DEVICE, likelihood_params=likelihood_params)
 
-    def _build_params(self, values: np.ndarray, condition_idx: int = None) -> dict:
-        p = dict(DEFAULT_PARAMS)
-
-        for key, val in zip(self.param_specs.keys(), values):
-            p[key] = val
-
-        p["variance"] = 1.0
-
-        if not self.enable_leak:
-            p["leak_rate"] = 0.0
-        if not self.enable_time_constant:
-            p["time_constant"] = 0.0
-
-        validate_params(p)
-        return p
-
-    def _objective_function(self, values, data, stimulus, n_reps, seed, l1_weight):
+    def _objective_function(self, values, data, stimulus, n_reps, l1_weight):
         try:
             params = self._build_params(values)
         except ValueError:
             return 1e6
-
         result = self._simulate_condition(stimulus, params, n_reps)
         if result is None:
-            return 1e6
-
-        return self.likelihood_calc.calculate_likelihood(
+            # Zero crossings across all reps — degenerate parameters.
+            # Finite graduated penalty so DE sees a gradient and can escape:
+            #   more negative time_constant (urgency inversion) → larger penalty
+            #   higher leak_rate (evidence trapping) → larger penalty
+            tc = params.get("time_constant", 0.0)
+            lr = params.get("leak_rate", 0.0)
+            urgency_penalty = max(0.0, -tc) * 200.0   # 0 at tc=0, up to 400 at tc=-2
+            leak_penalty    = lr * 500.0               # 0 at lr=0, 150 at lr=0.3
+            return 500.0 + urgency_penalty + leak_penalty
+        return self.likelihood_calc.compute_nll(
             result["rt"], result["choice"],
             np.asarray(data["rt"]), np.asarray(data["choice"]),
             result["signed_coherence"], np.asarray(data["signed_coherence"]),
@@ -189,30 +203,27 @@ def data_verification(data: pd.DataFrame):
 def fit_model(
     data: pd.DataFrame,
     stimulus: np.ndarray,
-    enable_leak: bool,
-    enable_time_constant: bool,
+    enable_leak: bool = True,
+    enable_time_constant: bool = True,
 ):
 
     data_verification(data)
 
+    free_params, fixed_params = make_params(enable_leak, enable_time_constant)
+
     model = DDMModel(
-        enable_leak=enable_leak,
-        enable_time_constant=enable_time_constant,
-        device='cuda',
-        likelihood_params={
-            "caf_weight": CAF_WEIGHT,
-            "caf_bins": CAF_BINS,
-            "rt_var_weight": RT_VAR_WEIGHT,
-            }
+        fixed_params=fixed_params,
+        free_params=free_params,
+        likelihood_params=LIKELIHOOD_PARAMS,
     )
 
     result = model.fit(
         data=data,
         stimulus=stimulus,
         n_reps=15,
-        max_iterations=500,
-        l1_weight=0.01,
-        verbose=False,
+        max_iterations=1000,
+        l1_weight=0.0,
+        verbose=True,
     )
 
     return model, result
@@ -220,10 +231,6 @@ def fit_model(
 
 def save_results(output_dir: Path, session_id, prior_block, model, result, job):
     out_path = (output_dir / f"{session_id}_prior_block_{prior_block}.pkl")
-
-    # if model is on gpu move it to cpu before saving
-    if model.device.type == "cuda":
-        model.to("cpu")
 
     with open(out_path, "wb") as f:
         pickle.dump({
@@ -249,8 +256,18 @@ def save_failure(output_dir, session_id, prior_block, job, stage, error):
         "timestamp": datetime.now().isoformat(),
     }
 
+    class _NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            return super().default(obj)
+
     with open(fail_path, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(payload, f, indent=2, cls=_NumpyEncoder)
 
     logger.error(f"[FAILED] {stage} → {fail_path}")
 
@@ -326,7 +343,7 @@ if __name__ == "__main__":
     # fit
     # ----------------------------
     try:
-        model, result = fit_model(data, stimulus, enable_leak, enable_time_constant)
+        model, result = fit_model(data, stimulus, enable_leak=enable_leak, enable_time_constant=enable_time_constant)
     except Exception as e:
         logger.error(f"[FAILED] fit_model: {e}")
         save_failure(output_dir, session_id, prior_block, job, "fit_model", e)

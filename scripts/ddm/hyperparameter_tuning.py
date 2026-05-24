@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.ddm.ddm2 import FreeParam, FixedParam, DecisionModel
+from src.ddm.ddm import FreeParam, FixedParam, DecisionModel
 
 # -----------------------------------------------------------------------
 # Defaults shared across helpers
@@ -121,7 +121,7 @@ def make_stimulus(
 
 def _make_ddm_model(config: TuningConfig) -> DecisionModel:
     """Instantiate DDMModel with the given likelihood config."""
-    from scripts.ddm.ddm_fitting2 import DDMModel
+    from scripts.ddm.ddm_fitting import DDMModel
     return DDMModel(
         fixed_params=_FIXED_PARAMS,
         free_params=_FREE_PARAMS,
