@@ -93,3 +93,6 @@ target/
 
 # gitattributes
 .gitattributes
+
+# claude
+.claude/
