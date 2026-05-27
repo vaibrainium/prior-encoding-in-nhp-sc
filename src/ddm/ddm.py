@@ -97,7 +97,7 @@ class DecisionModel:
         seed: int = 42,
     ):
         self.seed = seed
-        self._unit_noise: np.ndarray | None = None
+        self._precomputed: dict | None = None
         self.simulator = DriftDiffusionSimulator(device=device)
 
         self._free_params = free_params or {}
@@ -191,9 +191,17 @@ class DecisionModel:
         simulations = []
 
         for rep in range(n_reps):
-            rep_noise = self._unit_noise[rep] if self._unit_noise is not None else None
+            if self._precomputed is not None:
+                rep_noise = self._precomputed["unit_noise"][rep]
+                rep_sv    = self._precomputed["unit_sv"][rep]
+                rep_sz    = self._precomputed["unit_sz"][rep]
+            else:
+                rep_noise = rep_sv = rep_sz = None
             try:
-                sim = self.simulator.simulate_trials(stimulus, params, unit_noise=rep_noise)
+                sim = self.simulator.simulate_trials(
+                    stimulus, params,
+                    unit_noise=rep_noise, unit_sv=rep_sv, unit_sz=rep_sz,
+                )
             except Exception as exc:
                 logger.warning("Simulation failed: %s", exc)
                 return None
@@ -237,10 +245,10 @@ class DecisionModel:
 
         self._set_seed(self.seed)
 
-        # Precompute unit Gaussian noise once so every objective evaluation
-        # sees the same random draws (Common Random Numbers).
+        # Precompute all unit draws once so every objective evaluation sees the
+        # same random numbers (Common Random Numbers) — noise, sv, and sz alike.
         n_trials, n_timepoints = stimulus.shape
-        self._unit_noise = self.simulator.precompute_noise(n_trials, n_timepoints, n_reps=n_reps)
+        self._precomputed = self.simulator.precompute_noise(n_trials, n_timepoints, n_reps=n_reps)
 
         best_nll  = [np.inf]
         best_vals = [None]
@@ -317,16 +325,21 @@ class DecisionModel:
 
         self._set_seed(seed if seed is not None else self.seed)
 
-        all_coherences, all_rt, all_choice = [], [], []
-        for _ in range(n_reps):
-            simulation = self.simulator.simulate_trials(stimulus, params)
-            all_rt.append(simulation["rt"])
-            all_choice.append(simulation["choice"])
-            all_coherences.append(simulation["signed_coherence"])
+        if n_reps < 1:
+            raise ValueError("n_reps must be >= 1")
+        elif n_reps == 1:
+            return self.simulator.simulate_trials(stimulus, params)
+        else:
+            all_coherences, all_rt, all_choice = [], [], []
+            for _ in range(n_reps):
+                simulation = self.simulator.simulate_trials(stimulus, params)
+                all_rt.append(simulation["rt"])
+                all_choice.append(simulation["choice"])
+                all_coherences.append(simulation["signed_coherence"])
 
 
-        return pd.DataFrame({
-            "rt":        np.concatenate(all_rt)     if n_reps > 1 else all_rt[0],
-            "choice":    np.concatenate(all_choice) if n_reps > 1 else all_choice[0],
-            "signed_coherence": np.concatenate(all_coherences) if n_reps > 1 else all_coherences[0],
-        })
+            return pd.DataFrame({
+                "rt":        np.concatenate(all_rt),
+                "choice":    np.concatenate(all_choice),
+                "signed_coherence": np.concatenate(all_coherences),
+            })
