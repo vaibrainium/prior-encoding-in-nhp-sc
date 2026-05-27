@@ -69,7 +69,10 @@ class _NumbaSimulator:
     """Numba JIT backend — fastest on CPU due to per-trial early termination."""
 
     def simulate_trials(
-        self, stimulus: np.ndarray, params: dict, unit_noise: np.ndarray | None = None
+        self, stimulus: np.ndarray, params: dict,
+        unit_noise: np.ndarray | None = None,
+        unit_sv: np.ndarray | None = None,
+        unit_sz: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if stimulus.size == 0:
             return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
@@ -83,8 +86,14 @@ class _NumbaSimulator:
 
         sv = float(params.get("sv", 0.0))
         sz = float(params.get("sz", 0.0))
-        sv_draws  = np.random.normal(0.0, sv,  n_trials).astype(np.float32) if sv > 0.0 else np.zeros(n_trials, dtype=np.float32)
-        z_offsets = (np.random.uniform(-0.5, 0.5, n_trials) * sz).astype(np.float32) if sz > 0.0 else np.zeros(n_trials, dtype=np.float32)
+        if sv > 0.0:
+            sv_draws = (unit_sv * sv).astype(np.float32) if unit_sv is not None else np.random.normal(0.0, sv, n_trials).astype(np.float32)
+        else:
+            sv_draws = np.zeros(n_trials, dtype=np.float32)
+        if sz > 0.0:
+            z_offsets = ((unit_sz - 0.5) * sz).astype(np.float32) if unit_sz is not None else (np.random.uniform(-0.5, 0.5, n_trials) * sz).astype(np.float32)
+        else:
+            z_offsets = np.zeros(n_trials, dtype=np.float32)
 
         return _simulate_ddm_trials_numba(
             stim, noise, sv_draws, z_offsets,
@@ -112,6 +121,8 @@ class _TorchSimulator:
     def simulate_trials(
         self, stimulus: np.ndarray | torch.Tensor, params: dict,
         unit_noise: np.ndarray | None = None,
+        unit_sv: np.ndarray | None = None,
+        unit_sz: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         dev = self.device
         if isinstance(stimulus, torch.Tensor):
@@ -152,16 +163,32 @@ class _TorchSimulator:
 
         # sv: per-trial drift variability — add a constant offset to each trial's drift
         if sv > 0.0:
-            sv_draws   = torch.randn(n_trials, 1, device=dev) * sv                    # (N, 1)
-            drift_inc  = drift_inc + sv_draws * dt                                    # broadcast over T
+            if unit_sv is not None:
+                ptr = unit_sv.__array_interface__["data"][0]
+                svkey = (ptr, unit_sv.shape)
+                if getattr(self, "_sv_cache_key", None) != svkey:
+                    self._sv_cache_key = svkey
+                    self._sv_cache = torch.tensor(unit_sv, device=dev, dtype=torch.float32)
+                sv_draws = self._sv_cache.unsqueeze(1) * sv
+            else:
+                sv_draws = torch.randn(n_trials, 1, device=dev) * sv                 # (N, 1)
+            drift_inc = drift_inc + sv_draws * dt                                    # broadcast over T
 
         # sz: per-trial starting point variability — Uniform(z - sz/2, z + sz/2)
         if sz > 0.0:
-            z_offsets = (torch.rand(n_trials, device=dev) - 0.5) * sz
+            if unit_sz is not None:
+                ptr = unit_sz.__array_interface__["data"][0]
+                szkey = (ptr, unit_sz.shape)
+                if getattr(self, "_sz_cache_key", None) != szkey:
+                    self._sz_cache_key = szkey
+                    self._sz_cache = torch.tensor(unit_sz, device=dev, dtype=torch.float32)
+                z_offsets = (self._sz_cache - 0.5) * sz
+            else:
+                z_offsets = (torch.rand(n_trials, device=dev) - 0.5) * sz
             z_trials  = torch.clamp(z + z_offsets, 0.01, 0.99)
-            sp        = (z_trials * a).unsqueeze(1)                                   # (N, 1)
+            sp        = (z_trials * a).unsqueeze(1)                                  # (N, 1)
         else:
-            sp = z * a                                                                 # scalar
+            sp = z * a                                                                # scalar
 
         if unit_noise is not None:
             # Cache the per-rep noise slice on GPU to avoid repeated CPU→GPU transfers.
@@ -272,20 +299,28 @@ class DriftDiffusionSimulator:
         n_trials: int,
         n_timepoints: int,
         n_reps: int = 1,
-    ) -> np.ndarray:
-        """Return unit Gaussian noise of shape (n_reps, n_trials, n_timepoints-1).
+    ) -> dict:
+        """Return precomputed unit draws for CRN across all optimizer iterations.
 
-        Call this once before an optimization run (after setting the global seed)
-        and pass the result to simulate_trials via unit_noise to enable CRN.
+        Keys:
+          unit_noise : (n_reps, n_trials, n_timepoints-1)  standard normal
+          unit_sv    : (n_reps, n_trials)                   standard normal (scale by sv)
+          unit_sz    : (n_reps, n_trials)                   uniform [0,1)  (map to (-sz/2, sz/2))
         """
-        return np.random.standard_normal(
-            (n_reps, n_trials, n_timepoints - 1)
-        ).astype(np.float32)
+        return {
+            "unit_noise": np.random.standard_normal((n_reps, n_trials, n_timepoints - 1)).astype(np.float32),
+            "unit_sv":    np.random.standard_normal((n_reps, n_trials)).astype(np.float32),
+            "unit_sz":    np.random.uniform(0.0, 1.0, (n_reps, n_trials)).astype(np.float32),
+        }
 
     def simulate_trials(
         self, stimulus: np.ndarray | torch.Tensor, params: dict,
         unit_noise: np.ndarray | None = None,
+        unit_sv: np.ndarray | None = None,
+        unit_sz: np.ndarray | None = None,
     ) -> pd.DataFrame:
-        rt, choice = self._backend.simulate_trials(stimulus, params, unit_noise=unit_noise)
+        rt, choice = self._backend.simulate_trials(
+            stimulus, params, unit_noise=unit_noise, unit_sv=unit_sv, unit_sz=unit_sz
+        )
 
         return pd.DataFrame({"signed_coherence": stimulus[:, 0], "rt": rt, "choice": choice})
