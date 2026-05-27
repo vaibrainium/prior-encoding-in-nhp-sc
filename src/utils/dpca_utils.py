@@ -210,6 +210,7 @@ def create_dpca_matrix(
     ephys,
     ephys_config,
     condition_type="states",
+    outcome=1,
 ):
     """Build trial-averaged and trial-wise dPCA data matrices.
 
@@ -273,9 +274,9 @@ def create_dpca_matrix(
     }
     dPCA_trial_wise_data = {
         event: np.full(
-            [250, n_neurons, n_states, n_coherences, n_choices,
+            [300, n_neurons, n_states, n_coherences, n_choices,
              alignment_settings[event]["end_time_ms"] - alignment_settings[event]["start_time_ms"] + 1],
-            np.nan,
+            np.nan, dtype=np.float32,
         )
         for event in alignment_settings
     }
@@ -287,10 +288,15 @@ def create_dpca_matrix(
             for state_idx, state in enumerate(condition_dict["state_values"]):
                 trial_info = state_trial_info[state]
                 for coherence_idx, coherence in enumerate(condition_dict["coherences"]):
+                    # Support grouped coherences: list/tuple pools trials from multiple values into one bin
+                    coh_values = coherence if isinstance(coherence, (list, tuple)) else [coherence]
                     for choice_idx, choice in enumerate(condition_dict["choices"]):
-                        trials = ephys_utils.get_trial_num(
-                            trial_info[session_id], coherence=coherence, choice=choice_idx, outcome=1
-                        )
+                        trials = np.concatenate([
+                            ephys_utils.get_trial_num(
+                                trial_info[session_id], coherence=coh, choice=choice_idx, outcome=outcome
+                            )
+                            for coh in coh_values
+                        ], axis=0)
                         for neuron_id in neuron_ids:
                             trial_wise_data = ephys_utils.get_neural_data_from_trial_num(
                                 ephys[alignment][neuron_id], trials, type="convolved_spike_trains"
@@ -338,26 +344,26 @@ def create_dpca_matrix(
 # NaN cleaning
 # ──────────────────────────────────────────────────────────────────────────────
 
-def clean_dpca_data(averaged_data, trial_wise_data, alignments):
+def clean_dpca_data(averaged_data, trial_wise_data, alignments, compute_full=True):
     """Remove NaN-polluted timepoints and return two variants of the cleaned arrays.
 
     fit_avg / fit_tw   – any-NaN timepoints removed; safe to pass directly to dPCA.fit()
     full_avg / full_tw – only all-NaN timepoints removed; used for cross-period projection
+                         (None, None when compute_full=False — saves ~2× peak memory)
 
     Parameters
     ----------
     averaged_data   : dict[alignment] → ndarray (n_neurons, *cond_dims, n_time)
     trial_wise_data : dict[alignment] → ndarray (n_trials, n_neurons, *cond_dims, n_time)
     alignments      : iterable of alignment keys
+    compute_full    : if False, skip full_avg / full_tw; returns (fit_avg, fit_tw, None, None)
 
     Returns
     -------
     fit_avg, fit_tw, full_avg, full_tw : four dicts with the same alignment keys
     """
-    fit_avg  = {a: averaged_data[a].copy() for a in alignments}
-    fit_tw   = {a: trial_wise_data[a].copy() for a in alignments}
-    full_avg = {a: averaged_data[a].copy() for a in alignments}
-    full_tw  = {a: trial_wise_data[a].copy() for a in alignments}
+    fit_avg = {a: averaged_data[a].copy() for a in alignments}
+    fit_tw  = {a: trial_wise_data[a].copy() for a in alignments}
 
     for alignment in alignments:
         # fit arrays: drop timepoints where ANY condition has a NaN average
@@ -365,14 +371,21 @@ def clean_dpca_data(averaged_data, trial_wise_data, alignments):
         fit_avg[alignment] = fit_avg[alignment][..., no_any_nan]
         fit_tw[alignment]  = fit_tw[alignment][..., no_any_nan]
 
+        # drop all-NaN trial rows
+        nonnan_trial = ~np.all(np.isnan(fit_tw[alignment]), axis=(1, 2, 3, 4, 5))
+        fit_tw[alignment] = fit_tw[alignment][nonnan_trial]
+
+    if not compute_full:
+        return fit_avg, fit_tw, None, None
+
+    full_avg = {a: averaged_data[a].copy() for a in alignments}
+    full_tw  = {a: trial_wise_data[a].copy() for a in alignments}
+
+    for alignment in alignments:
         # full arrays: drop timepoints where ALL conditions are NaN
         no_all_nan = ~np.all(np.isnan(full_avg[alignment]), axis=(0, 1, 2, 3))
         full_avg[alignment] = full_avg[alignment][..., no_all_nan]
         full_tw[alignment]  = full_tw[alignment][..., no_all_nan]
-
-        # drop all-NaN trial rows
-        nonnan_trial = ~np.all(np.isnan(fit_tw[alignment]), axis=(1, 2, 3, 4, 5))
-        fit_tw[alignment] = fit_tw[alignment][nonnan_trial]
 
         nonnan_trial_full = ~np.all(np.isnan(full_tw[alignment]), axis=(1, 2, 3, 4, 5))
         full_tw[alignment] = full_tw[alignment][nonnan_trial_full]
@@ -581,19 +594,25 @@ def _classification(class_means, test, groups=None):
              If None, each condition is its own class (standard Q-class decoder).
     """
     if groups is not None:
+        # Subset to only the condition indices mentioned in groups.
+        # Unlisted indices (e.g. 20% coh when groups=[[0,1],[3]]) are excluded from
+        # the classifier so true_group length matches the number of evaluated conditions.
+        all_idx = [idx for g in groups for idx in g]
         centroids = np.stack(
             [np.nanmean(class_means[g], axis=0) for g in groups]
-        )                                                               # (n_groups, T)
-        true_group = np.array([gi for gi, g in enumerate(groups) for _ in g])  # (Q,)
-        distances = np.abs(test[:, None, :] - centroids[None, :, :])  # (Q, n_groups, T)
-        nearest = np.argmin(distances, axis=1)                         # (Q, T)
-        correct = nearest == true_group[:, None]                       # (Q, T)
+        )                                                                     # (n_groups, T)
+        true_group = np.array([gi for gi, g in enumerate(groups) for _ in g])  # (n_mentioned,)
+        distances = np.abs(test[all_idx, None, :] - centroids[None, :, :])   # (n_mentioned, n_groups, T)
+        nearest = np.argmin(distances, axis=1)                                # (n_mentioned, T)
+        correct = nearest == true_group[:, None]                              # (n_mentioned, T)
+        performance = correct.mean(axis=0).astype(float)
+        performance[np.any(np.isnan(test[all_idx]), axis=0)] = np.nan
     else:
         distances = np.abs(test[:, None, :] - class_means[None, :, :])  # (Q, Q, T)
-        nearest = np.argmin(distances, axis=1)                          # (Q, T)
-        correct = nearest == np.arange(class_means.shape[0])[:, None]  # (Q, T)
-    performance = correct.mean(axis=0).astype(float)
-    performance[np.any(np.isnan(test), axis=0)] = np.nan
+        nearest = np.argmin(distances, axis=1)                           # (Q, T)
+        correct = nearest == np.arange(class_means.shape[0])[:, None]   # (Q, T)
+        performance = correct.mean(axis=0).astype(float)
+        performance[np.any(np.isnan(test), axis=0)] = np.nan
     return performance
 
 
@@ -650,6 +669,61 @@ def _dpca_train_test_split(dpca, X, trialX):
     return trainX, blindX
 
 
+def _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8):
+    """Fraction-based train/test split: average train trials, average held-out trials.
+
+    For each (neuron, condition) cell independently, that neuron's non-NaN trials are
+    split into a train set (train_fraction) and a test set (1 - train_fraction). Both
+    are averaged, so the test centroid is far less noisy than the single-trial LOO test
+    point. The per-neuron split guarantees every neuron contributes to both trainX and
+    testX (as long as it has ≥ 2 valid trials for that condition), which is important
+    for pseudo-populations where neurons from different sessions have different trial counts.
+
+    Parameters
+    ----------
+    X              : trial-averaged data, shape (n_neurons, *cond_dims, n_time)
+    trialX         : trial-wise data,     shape (n_trials, n_neurons, *cond_dims, n_time)
+    train_fraction : fraction of trials used for training (default 0.8)
+
+    Returns
+    -------
+    trainX, testX : both shape (n_neurons, *cond_dims, n_time), mean-centred
+    """
+    import itertools
+    n_neurons  = X.shape[0]
+    cond_shape = X.shape[1:-1]      # (*cond_dims,)  e.g. (n_b, n_s, n_c)
+    trainX = np.full_like(X, np.nan)
+    testX  = np.full_like(X, np.nan)
+
+    for idx in itertools.product(*[range(d) for d in cond_shape]):
+        for n in range(n_neurons):
+            # trial data for this (neuron, condition) cell: (n_trials, n_time)
+            sel = trialX[(slice(None), n) + idx + (slice(None),)]
+            valid = ~np.all(np.isnan(sel), axis=1)
+            vi = np.where(valid)[0]
+            if len(vi) == 0:
+                continue
+            perm    = np.random.permutation(len(vi))
+            # ensure at least 1 test trial when ≥ 2 valid trials exist
+            n_train = min(max(1, int(round(len(vi) * train_fraction))), len(vi) - 1)
+            tr, te  = vi[perm[:n_train]], vi[perm[n_train:]]
+            dest    = (n,) + idx + (slice(None),)
+            x_full  = X[dest]
+            if tr.size:
+                tr_mean = np.nanmean(sel[tr], axis=0)
+                # fall back to full mean where all train trials are NaN at a timepoint
+                # (e.g. late cue timepoints trimmed by short RT across all train trials)
+                tr_nan = np.isnan(tr_mean)
+                tr_mean[tr_nan] = x_full[tr_nan]
+                trainX[dest] = tr_mean
+            if te.size:
+                testX[dest] = np.nanmean(sel[te], axis=0)  # NaN only if all test trials are NaN
+
+    trainX -= np.nanmean(_flat2d(trainX), 1)[(np.s_[:],) + (None,) * (X.ndim - 1)]
+    testX  -= np.nanmean(_flat2d(testX),  1)[(np.s_[:],) + (None,) * (X.ndim - 1)]
+    return trainX, testX
+
+
 def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
     """Run n_splits train/test splits and average classification scores.
 
@@ -663,7 +737,8 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
         scores = {key: np.empty((dpca.n_components[key], n_splits, K)) for key in keys}
 
     for shuffle in range(n_splits):
-        trainX, validX = _dpca_train_test_split(dpca, X, trialX)
+        # trainX, validX = _dpca_train_test_split(dpca, X, trialX)  # LOO: noisy single-trial test
+        trainX, validX = _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8)
         dpca.fit(trainX)
         dpca, trainZ = dpca_transform(dpca, trainX)
         dpca, validZ = dpca_transform(dpca, validX)
@@ -707,10 +782,10 @@ def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
     nan_mask = np.isnan(trialX_s)                    # bool, 1/4 the size of float32 trialX_s
     trialX_s[nan_mask] = 0.0
     count = nan_mask.shape[0] - nan_mask.sum(axis=0) # no ~nan_mask temporary
-    del nan_mask
     X_s = trialX_s.sum(axis=0, dtype=np.float32) / np.maximum(count, 1).astype(np.float32)
+    trialX_s[nan_mask] = np.nan                      # restore NaN so split functions see valid rows correctly
     X_s[count == 0] = np.nan
-    del count
+    del count, nan_mask
 
     no_nan = ~np.any(np.isnan(X_s), axis=tuple(range(X_s.ndim - 1)))
     X_s = X_s[..., no_nan]
@@ -724,11 +799,30 @@ def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
     return score, Z
 
 
+def _smooth_score_array(arr, sigma):
+    """Weighted NaN-aware Gaussian smooth for a (n_comp, T) score array."""
+    from scipy.ndimage import gaussian_filter1d
+    out = arr.copy()
+    for k in range(arr.shape[0]):
+        trace = arr[k]
+        nan_mask = np.isnan(trace)
+        if nan_mask.all():
+            continue
+        filled = trace.copy()
+        filled[nan_mask] = 0.0
+        numerator   = gaussian_filter1d(filled,                    sigma=sigma)
+        denominator = gaussian_filter1d((~nan_mask).astype(float), sigma=sigma)
+        sm = numerator / np.where(denominator > 0, denominator, np.nan)
+        sm[nan_mask] = np.nan
+        out[k] = sm
+    return out
+
+
 def dpca_significance_analysis(
     dpca, X, trialX,
-    n_shuffles=100, n_splits=100, n_consecutive=10,
+    n_shuffles=100, n_splits=100, n_consecutive=1,
     full=False, keys=None, n_jobs=-1,
-    key_groups=None,
+    key_groups=None, smooth_sigma=None,
 ):
     """Compute significance masks using a nearest-centroid classifier with shuffled null.
 
@@ -739,7 +833,7 @@ def dpca_significance_analysis(
     trialX        : trial-wise data, shape (n_trials, n_neurons, *cond_dims, n_time)
     n_shuffles    : shuffles to build null distribution
     n_splits      : train/test splits per score estimate
-    n_consecutive : min consecutive significant timepoints required
+    n_consecutive : min consecutive significant timepoints required (ignored when smooth_sigma set)
     full          : if True return (masks, true_score, shuffled_scores, shuffled_Z)
     keys          : marginalizations to test; defaults to all non-time keys
     n_jobs        : number of parallel jobs for shuffle loop (-1 = all cores)
@@ -747,11 +841,17 @@ def dpca_significance_analysis(
                     {'s': [[0,1],[2,3]]} classifies low (0%,6%) vs high (20%,50%) coherence
                     instead of one-of-four. Data and trial structure stay unchanged;
                     only the classification boundary changes.
+    smooth_sigma  : float or None. If set, apply a Gaussian filter (sigma in timepoints) to
+                    true_score along the time axis before thresholding against the null
+                    quantile. Smoothing removes high-frequency noise from the score trace,
+                    so the resulting mask reflects sustained significance rather than isolated
+                    spikes. When None, falls back to the n_consecutive denoising approach.
 
     Returns
     -------
     masks : dict[key] → (n_components, T) bool array
     true_score : dict[key] → (n_components, T) float array  — classifier accuracy on real data
+                 (smoothed when smooth_sigma is set)
     scores : dict[key] → list of (n_components, T) float arrays  — null distribution per shuffle
     shuffled_transformed_data : list  — only returned when full=True
     """
@@ -771,14 +871,16 @@ def dpca_significance_analysis(
     from joblib import Parallel, delayed
     import os as _os
 
-    # Cap n_jobs so peak RAM stays within 80% of available memory.
+    # Cap n_jobs so peak RAM stays within 50% of available memory.
     # Peak per worker = 3× trialX: (1) .copy() for shuffle_labels, (2) _replace_nan() copy
     # inside np.nanmean when NaNs are present, (3) boolean-index copy for NaN trimming.
+    # Use 0.5 (not 0.8) because available RAM reported by psutil includes OS reclaimable
+    # pages that are not reliably available to new worker processes under memory pressure.
     try:
         import psutil as _psutil
         _mem_avail = _psutil.virtual_memory().available
         _mem_per_worker = 3 * trialX.nbytes
-        _max_safe = max(1, int(_mem_avail * 0.8 / _mem_per_worker))
+        _max_safe = max(1, int(_mem_avail * 0.5 / _mem_per_worker))
         _n_cpu = _os.cpu_count() or 1
         _requested = (_n_cpu + 1 + n_jobs) if n_jobs < 0 else n_jobs
         _effective = min(_requested, _max_safe)
@@ -796,6 +898,10 @@ def dpca_significance_analysis(
     true_score = _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=key_groups)
     print("True score done.")
 
+    if smooth_sigma is not None:
+        for key in keys:
+            true_score[key] = _smooth_score_array(true_score[key], smooth_sigma)
+
     print(f"Running {n_shuffles} shuffles ({n_jobs} parallel jobs)...", flush=True)
     shuffle_results = Parallel(n_jobs=n_jobs, verbose=10, max_nbytes='1M')(
         delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups)
@@ -805,15 +911,23 @@ def dpca_significance_analysis(
     scores = {key: [r[0][key] for r in shuffle_results] for key in keys}
     shuffled_transformed_data = [r[1] for r in shuffle_results]
 
+    if smooth_sigma is not None:
+        scores = {
+            key: [_smooth_score_array(s, smooth_sigma) for s in scores[key]]
+            for key in keys
+        }
+
     masks = {key: np.full(true_score[key].shape, False) for key in keys}
     for key in keys:
         min_len = min(s.shape[1] for s in scores[key])
         quantile_score = np.nanquantile(
             np.dstack([s[:, :min_len] for s in scores[key]]), 0.95, axis=-1
         )
-        masks[key][:, :min_len] = true_score[key][:, :min_len] > quantile_score
+        masks[key][:, :min_len] = true_score[key][:, :min_len] >= quantile_score
 
-    if n_consecutive > 1:
+    if smooth_sigma is None and n_consecutive > 1:
+        # Legacy denoising: zero out runs shorter than n_consecutive in the binary mask.
+        # Prefer smooth_sigma for continuous smoothing of the score trace before thresholding.
         for key in keys:
             for k in range(masks[key].shape[0]):
                 masks[key][k] = _denoise_mask(masks[key][k].astype(np.int32), n_consecutive)
@@ -821,3 +935,5 @@ def dpca_significance_analysis(
     if full:
         return masks, true_score, scores, shuffled_transformed_data
     return masks, true_score, scores
+
+
