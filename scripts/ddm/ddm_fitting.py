@@ -11,6 +11,7 @@ from datetime import datetime
 
 from config import dir_config
 from src.ddm.ddm import DecisionModel, FreeParam, FixedParam
+from src.ddm.utils import prepare_data, build_stimulus, build_grid, get_job
 
 import logging
 logging.basicConfig(
@@ -86,42 +87,6 @@ class DDMModel(DecisionModel):
         )
 
 
-def build_grid(behavior_df: pd.DataFrame) -> list[dict]:
-
-    session_ids = np.sort(behavior_df["session_id"].unique())
-    prior_blocks = np.sort(behavior_df["prior_block"].unique())
-
-    variants = [
-        (False, False),
-        (False, True),
-        (True,  False),
-        (True,  True),
-    ]
-
-    return [
-        {
-            "session_id": session_id,
-            "prior_block": prior_block,
-            "enable_leak": enable_leak,
-            "enable_time_constant": enable_time_constant,
-        }
-        for enable_leak, enable_time_constant in variants
-        for session_id in session_ids
-        for prior_block in prior_blocks
-    ]
-
-
-def get_job(grid: list[dict], job_id: int) -> dict:
-
-    if job_id >= len(grid):
-        raise ValueError(
-            f"job_id {job_id} out of bounds "
-            f"(max={len(grid)-1})"
-        )
-
-    return grid[job_id]
-
-
 def get_output_dir(
     ddm_dir: Path,
     enable_leak: bool,
@@ -147,38 +112,6 @@ def load_behavior_data(ddm_dir: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"Missing file: {behavior_path}")
 
     return pd.read_csv(behavior_path)
-
-
-def prepare_data(
-    behavior_df: pd.DataFrame,
-    session_id,
-    prior_block,
-) -> pd.DataFrame:
-
-    data = behavior_df[
-        (behavior_df["session_id"] == session_id) &
-        (behavior_df["prior_block"] == prior_block)
-    ][["rt", "choice", "signed_coherence"]].copy()
-
-    if data.empty:
-        raise ValueError(
-            f"No data for session={session_id}, "
-            f"prior_block={prior_block}"
-        )
-
-    data["choice"] = data["choice"].astype(int)
-
-    return data
-
-
-def build_stimulus(data: pd.DataFrame) -> np.ndarray:
-
-    stimulus_length = max(100, int(np.clip(data["rt"].max(), 0, 5) * 1000))
-
-    return np.tile(
-        data["signed_coherence"].to_numpy()[:, None],
-        (1, stimulus_length)
-    )
 
 
 def data_verification(data: pd.DataFrame):

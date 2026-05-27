@@ -37,8 +37,6 @@ def build_stimulus(data: pd.DataFrame) -> np.ndarray:
         (1, stimulus_length)
     )
 
-
-
 def build_grid(behavior_df: pd.DataFrame) -> list[dict]:
 
     session_ids = np.sort(behavior_df["session_id"].unique())
@@ -63,7 +61,6 @@ def build_grid(behavior_df: pd.DataFrame) -> list[dict]:
         for prior_block in prior_blocks
     ]
 
-
 def get_job(grid: list[dict], job_id: int) -> dict:
 
     if job_id >= len(grid):
@@ -74,14 +71,12 @@ def get_job(grid: list[dict], job_id: int) -> dict:
 
     return grid[job_id]
 
-
 class CPUUnpickler(pickle.Unpickler):
     """Remaps any CUDA storage to CPU when loading on a CPU-only machine."""
     def find_class(self, module, name):
         if module == "torch.storage" and name == "_load_from_bytes":
             return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
         return super().find_class(module, name)
-
 
 def load_model(path):
     with open(path, "rb") as f:
