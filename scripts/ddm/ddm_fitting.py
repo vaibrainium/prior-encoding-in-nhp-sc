@@ -1,5 +1,5 @@
 import argparse
-import pickle
+import cloudpickle
 from pathlib import Path
 
 import numpy as np
@@ -166,7 +166,7 @@ def save_results(output_dir: Path, session_id, prior_block, model, result, job):
     out_path = (output_dir / f"{session_id}_prior_block_{prior_block}.pkl")
 
     with open(out_path, "wb") as f:
-        pickle.dump({
+        cloudpickle.dump({
                 "model": model,
                 "results": result,
                 "job": job,
