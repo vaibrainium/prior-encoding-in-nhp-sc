@@ -36,7 +36,6 @@ class LikelihoodCalculator:
         p_min: float = 1e-6,
         caf_weight: float = 1.0,
         caf_bins: int = 5,
-        rt_var_weight: float = 0.0,
         stability_weight: float = 0.0,
         chrono_weight: float = 2.0,
     ):
@@ -44,7 +43,6 @@ class LikelihoodCalculator:
         self.p_min            = p_min
         self.caf_weight       = caf_weight
         self.caf_bins         = caf_bins
-        self.rt_var_weight    = rt_var_weight
         self.stability_weight = stability_weight
         self.chrono_weight    = chrono_weight
         self.eps              = 1e-12

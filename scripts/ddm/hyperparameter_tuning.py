@@ -2,7 +2,7 @@
 Hyperparameter tuning for LikelihoodCalculator weights.
 
 Strategy: behavioral RMSE on held-out simulation.
-  1. Fit the DDM under each (chrono_weight, caf_weight, rt_var_weight) combo.
+  1. Fit the DDM under each (chrono_weight, caf_weight) combo.
   2. Score by RMSE between data and post-fit simulation on psychometric and
      chronometric (upper + lower) curves — independent of whichever likelihood
      was used to fit, so the comparison is fair across configs.
@@ -79,7 +79,6 @@ _DT             = 0.001
 class TuningConfig:
     chrono_weight: float
     caf_weight:    float
-    rt_var_weight: float
     caf_bins:      int = 5
     nbins:         int = 5
 
@@ -87,20 +86,18 @@ class TuningConfig:
         return (
             f"ch={self.chrono_weight:.1f}"
             f"_caf={self.caf_weight:.1f}"
-            f"_var={self.rt_var_weight:.1f}"
         )
 
 
 def build_param_grid(
     chrono_weights: list[float] = (0.5, 1.0, 2.0, 4.0),
     caf_weights:    list[float] = (0.5, 1.0, 2.0),
-    rt_var_weights: list[float] = (0.0, 0.5, 1.0),
     caf_bins:       int = 5,
     nbins:          int = 5,
 ) -> list[TuningConfig]:
     return [
-        TuningConfig(cw, aw, vw, caf_bins=caf_bins, nbins=nbins)
-        for cw, aw, vw in product(chrono_weights, caf_weights, rt_var_weights)
+        TuningConfig(cw, aw, caf_bins=caf_bins, nbins=nbins)
+        for cw, aw in product(chrono_weights, caf_weights)
     ]
 
 
@@ -129,7 +126,6 @@ def _make_ddm_model(config: TuningConfig) -> DecisionModel:
             "chrono_weight": config.chrono_weight,
             "caf_weight":    config.caf_weight,
             "caf_bins":      config.caf_bins,
-            "rt_var_weight": config.rt_var_weight,
             "nbins":         config.nbins,
         },
     )
@@ -143,7 +139,7 @@ def generate_synthetic_data(
 ) -> tuple[pd.DataFrame, np.ndarray]:
     """Simulate data from known parameters for parameter recovery tests."""
     stimulus  = make_stimulus(coherences=coherences, trials_per_coh=trials_per_coh)
-    tmp_model = _make_ddm_model(TuningConfig(chrono_weight=2.0, caf_weight=1.0, rt_var_weight=0.0))
+    tmp_model = _make_ddm_model(TuningConfig(chrono_weight=2.0, caf_weight=1.0))
     data      = tmp_model.simulate(stimulus=stimulus, params=true_params, n_reps=3, seed=seed)
     return pd.DataFrame(data), stimulus
 
@@ -318,7 +314,6 @@ def grid_search(
             "label":          r["label"],
             "chrono_weight":  r["config"].chrono_weight,
             "caf_weight":     r["config"].caf_weight,
-            "rt_var_weight":  r["config"].rt_var_weight,
             "composite":      r["composite"],
             "psychometric":   r["psychometric"],
             "chrono_upper":   r["chrono_upper"],
@@ -341,37 +336,31 @@ def plot_tuning_results(df: pd.DataFrame) -> None:
     Lower (darker) is better.
     """
     metrics = ["composite", "psychometric", "chrono_upper", "chrono_lower"]
-    pairs = [
-        ("chrono_weight", "caf_weight",   "rt_var_weight"),
-        ("chrono_weight", "rt_var_weight","caf_weight"),
-        ("caf_weight",    "rt_var_weight","chrono_weight"),
-    ]
-
     valid_metrics = [m for m in metrics if m in df.columns and df[m].notna().any()]
+
     fig, axes = plt.subplots(
-        len(valid_metrics), len(pairs),
-        figsize=(5 * len(pairs), 4 * len(valid_metrics)),
+        1, len(valid_metrics),
+        figsize=(5 * len(valid_metrics), 4),
         squeeze=False,
     )
 
-    for row_i, metric in enumerate(valid_metrics):
-        for col_i, (x, y, _) in enumerate(pairs):
-            ax = axes[row_i, col_i]
-            pivot = (
-                df.groupby([x, y])[metric]
-                .mean()
-                .reset_index()
-                .pivot(index=y, columns=x, values=metric)
-            )
-            im = ax.imshow(pivot.values, aspect="auto", cmap="viridis_r")
-            ax.set_xticks(range(len(pivot.columns)))
-            ax.set_xticklabels([f"{v:.1f}" for v in pivot.columns], fontsize=8)
-            ax.set_yticks(range(len(pivot.index)))
-            ax.set_yticklabels([f"{v:.1f}" for v in pivot.index], fontsize=8)
-            ax.set_xlabel(x, fontsize=9)
-            ax.set_ylabel(y, fontsize=9)
-            ax.set_title(metric.replace("_", " "), fontsize=9)
-            plt.colorbar(im, ax=ax, shrink=0.8)
+    for col_i, metric in enumerate(valid_metrics):
+        ax = axes[0, col_i]
+        pivot = (
+            df.groupby(["chrono_weight", "caf_weight"])[metric]
+            .mean()
+            .reset_index()
+            .pivot(index="caf_weight", columns="chrono_weight", values=metric)
+        )
+        im = ax.imshow(pivot.values, aspect="auto", cmap="viridis_r")
+        ax.set_xticks(range(len(pivot.columns)))
+        ax.set_xticklabels([f"{v:.1f}" for v in pivot.columns], fontsize=8)
+        ax.set_yticks(range(len(pivot.index)))
+        ax.set_yticklabels([f"{v:.1f}" for v in pivot.index], fontsize=8)
+        ax.set_xlabel("chrono_weight", fontsize=9)
+        ax.set_ylabel("caf_weight", fontsize=9)
+        ax.set_title(metric.replace("_", " "), fontsize=9)
+        plt.colorbar(im, ax=ax, shrink=0.8)
 
     plt.suptitle("Behavioral RMSE by hyperparameter combo (lower = better)", y=1.01)
     plt.tight_layout()
@@ -388,7 +377,6 @@ def plot_best_fit(
     config = TuningConfig(
         chrono_weight=best_row["chrono_weight"],
         caf_weight=best_row["caf_weight"],
-        rt_var_weight=best_row["rt_var_weight"],
     )
     model = _make_ddm_model(config)
 
@@ -438,7 +426,6 @@ def run_tuning(
     true_params:    Optional[dict]         = None,
     chrono_weights: list[float] = (0.5, 1.0, 2.0, 4.0),
     caf_weights:    list[float] = (0.5, 1.0, 2.0),
-    rt_var_weights: list[float] = (0.0, 0.5, 1.0),
     n_reps:         int  = 5,
     max_iter:       int  = 300,
     save_path:      Optional[Path] = None,
@@ -468,7 +455,6 @@ def run_tuning(
     configs = build_param_grid(
         chrono_weights=list(chrono_weights),
         caf_weights=list(caf_weights),
-        rt_var_weights=list(rt_var_weights),
     )
 
     secs_per_config = max_iter * 0.3          # rough estimate

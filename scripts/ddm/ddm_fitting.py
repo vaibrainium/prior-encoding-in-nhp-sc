@@ -25,7 +25,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LIKELIHOOD_PARAMS = {
     "chrono_weight": 1.5,
     "caf_weight":    1.5,
-    "rt_var_weight": 0.0,
     "caf_bins":      5,
 }
 
