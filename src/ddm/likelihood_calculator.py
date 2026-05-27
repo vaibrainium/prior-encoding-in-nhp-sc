@@ -132,38 +132,10 @@ class LikelihoodCalculator:
             caf_p.append(correct_p[bp].mean())
 
         if not caf_d:
-            return 0.0
+            return 1e6
 
         mse = float(np.mean((np.array(caf_d) - np.array(caf_p)) ** 2))
         return self.caf_weight * len(rt_d) * mse
-
-    def _variance_nll(self, rt_data, coh_data, rt_pred, coh_pred):
-        """
-        Log-ratio RT variance mismatch per coherence, scale-invariant.
-        """
-        coh_data = np.round(coh_data.astype(float), 2)
-        coh_pred = np.round(coh_pred.astype(float), 2)
-
-        total  = 0.0
-        n_bins = 0
-
-        for coh in np.unique(coh_data):
-            rd = rt_data[coh_data == coh]
-            rp = rt_pred[coh_pred == coh]
-
-            if len(rd) < 5 or len(rp) < 5:
-                continue
-
-            var_d = np.var(rd)
-            var_p = np.var(rp)
-
-            total  += (np.log(var_p + 1e-6) - np.log(var_d + 1e-6)) ** 2
-            n_bins += 1
-
-        if n_bins == 0:
-            return 0.0
-
-        return self.rt_var_weight * len(rt_data) * (total / n_bins)
 
     def _distribution_stability(self, rt_d, ch_d, rt_p, ch_p) -> float:
         eps = 1e-12
@@ -230,7 +202,7 @@ class LikelihoodCalculator:
 
                 if len(rt_d) < 5:
                     logger.warning(f"Coherence {coh}: too few data trials ({len(rt_d)}), skipping.")
-                    return 1e6
+                    return 0
 
                 if len(rt_p) < 5:
                     # Model predicts almost no crossings — clearly wrong parameters
@@ -285,9 +257,6 @@ class LikelihoodCalculator:
                     rt_data, choice_data, coh_data,
                     rt_pred, choice_pred, coh_pred,
                 )
-
-            if self.rt_var_weight > 0:
-                total += self._variance_nll(rt_data, coh_data, rt_pred, coh_pred)
 
             if self.stability_weight > 0:
                 total += self._distribution_stability(
