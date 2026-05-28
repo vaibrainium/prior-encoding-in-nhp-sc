@@ -39,14 +39,20 @@ BASE_FREE_PARAMS = {
     "z":            FreeParam(0.1,  0.9),
     "drift_gain":   FreeParam(1.0, 10.0),
     "drift_offset": FreeParam(-5.0, 5.0),
-    "sv":           FreeParam(0.0,  3.0),  # between-trial drift variability
-    "sz":           FreeParam(0.0,  0.3),  # between-trial starting point variability (z units)
 }
 
 
-def make_params(enable_leak: bool, enable_time_constant: bool):
+def make_params(enable_leak: bool, enable_time_constant: bool, enable_sv: bool = True, enable_sz: bool = True):
     free = dict(BASE_FREE_PARAMS)
     fixed = dict(FIXED_PARAMS)
+    if enable_sv:
+        free["sv"] = FreeParam(0.0, 3.0)
+    else:
+        fixed["sv"] = FixedParam(0.0)
+    if enable_sz:
+        free["sz"] = FreeParam(0.0, 0.3)
+    else:
+        fixed["sz"] = FixedParam(0.0)
     if enable_leak:
         free["leak_rate"] = FreeParam(0.0, 0.3)
     else:
@@ -90,12 +96,17 @@ def get_output_dir(
     ddm_dir: Path,
     enable_leak: bool,
     enable_time_constant: bool,
+    enable_sv: bool = True,
+    enable_sz: bool = True,
 ) -> Path:
 
-    model_name = (
-        f"leak-{int(enable_leak)}_"
-        f"tc-{int(enable_time_constant)}"
-    )
+    if not enable_leak and not enable_time_constant and not enable_sv and not enable_sz:
+        model_name = "plain_ddm"
+    else:
+        model_name = (
+            f"leak-{int(enable_leak)}_"
+            f"tc-{int(enable_time_constant)}"
+        )
 
     output_dir = ddm_dir / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -137,11 +148,13 @@ def fit_model(
     stimulus: np.ndarray,
     enable_leak: bool = True,
     enable_time_constant: bool = True,
+    enable_sv: bool = True,
+    enable_sz: bool = True,
 ):
 
     data_verification(data)
 
-    free_params, fixed_params = make_params(enable_leak, enable_time_constant)
+    free_params, fixed_params = make_params(enable_leak, enable_time_constant, enable_sv, enable_sz)
 
     model = DDMModel(
         fixed_params=fixed_params,
@@ -249,15 +262,15 @@ if __name__ == "__main__":
 
     enable_leak = job["enable_leak"]
     enable_time_constant = job["enable_time_constant"]
+    enable_sv = job["enable_sv"]
+    enable_sz = job["enable_sz"]
 
-
-
-    logger.info(f"[START] job_id={args.job_id}:  Session ID - {session_id}, Prior Block - {prior_block}, Enable Leak - {enable_leak}, Enable Time Constant - {enable_time_constant}")
+    logger.info(f"[START] job_id={args.job_id}:  Session ID - {session_id}, Prior Block - {prior_block}, Enable Leak - {enable_leak}, Enable Time Constant - {enable_time_constant}, Enable SV - {enable_sv}, Enable SZ - {enable_sz}")
 
     # ----------------------------
     # output dir
     # ----------------------------
-    output_dir = get_output_dir(ddm_dir, enable_leak, enable_time_constant)
+    output_dir = get_output_dir(ddm_dir, enable_leak, enable_time_constant, enable_sv, enable_sz)
     logger.info(f"Output directory: {output_dir}")
 
     # ----------------------------
@@ -275,7 +288,7 @@ if __name__ == "__main__":
     # fit
     # ----------------------------
     try:
-        model, result = fit_model(data, stimulus, enable_leak=enable_leak, enable_time_constant=enable_time_constant)
+        model, result = fit_model(data, stimulus, enable_leak=enable_leak, enable_time_constant=enable_time_constant, enable_sv=enable_sv, enable_sz=enable_sz)
     except Exception as e:
         logger.error(f"[FAILED] fit_model: {e}")
         save_failure(output_dir, session_id, prior_block, job, "fit_model", e)

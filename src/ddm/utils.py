@@ -43,20 +43,20 @@ def build_grid(behavior_df: pd.DataFrame) -> list[dict]:
     prior_blocks = np.sort(behavior_df["prior_block"].unique())
 
     variants = [
-        (False, False),
-        (False, True),
-        (True,  False),
-        (True,  True),
+        {"enable_leak": False, "enable_time_constant": False, "enable_sv": True,  "enable_sz": True},
+        {"enable_leak": False, "enable_time_constant": True,  "enable_sv": True,  "enable_sz": True},
+        {"enable_leak": True,  "enable_time_constant": False, "enable_sv": True,  "enable_sz": True},
+        {"enable_leak": True,  "enable_time_constant": True,  "enable_sv": True,  "enable_sz": True},
+        {"enable_leak": False, "enable_time_constant": False, "enable_sv": False, "enable_sz": False},
     ]
 
     return [
         {
             "session_id": session_id,
             "prior_block": prior_block,
-            "enable_leak": enable_leak,
-            "enable_time_constant": enable_time_constant,
+            **variant,
         }
-        for enable_leak, enable_time_constant in variants
+        for variant in variants
         for session_id in session_ids
         for prior_block in prior_blocks
     ]
