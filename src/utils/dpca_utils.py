@@ -74,19 +74,22 @@ def extract_hmm_state_trial_info(
     import pandas as pd
     from pathlib import Path
 
-    if compiled_dir is not None:
-        compiled_dir = Path(compiled_dir)
-        for session_id in glm_hmm_data:
-            if "reaction_time" in glm_hmm_data[session_id].columns:
-                continue
-            trial_data = pd.read_csv(
-                compiled_dir / session_id / f"{session_id}_trial_cleaned.csv", index_col=None
-            )
-            gp_trials = trial_data[trial_data.task_type == 1].reset_index(drop=True)
-            valid_idx = np.where(gp_trials.outcome >= 0)[0]
-            first_trial = valid_idx[0] + 1  # n_trial_back = 1
-            reaction_time = np.array(gp_trials.reaction_time)[first_trial:]
-            glm_hmm_data[session_id]["reaction_time"] = reaction_time
+    if compiled_dir is None:
+        raise ValueError(
+            "Compiled directory is missing! Provide compiled_dir to load reaction_time from trial CSVs."
+        )
+    compiled_dir = Path(compiled_dir)
+    for session_id in glm_hmm_data:
+        if "reaction_time" in glm_hmm_data[session_id].columns:
+            continue
+        trial_data = pd.read_csv(
+            compiled_dir / session_id / f"{session_id}_trial_cleaned.csv", index_col=None
+        )
+        gp_trials = trial_data[trial_data.task_type == 1].reset_index(drop=True)
+        valid_idx = np.where(gp_trials.outcome >= 0)[0]
+        first_trial = valid_idx[0] + 1  # n_trial_back = 1
+        reaction_time = np.array(gp_trials.reaction_time)[first_trial:]
+        glm_hmm_data[session_id]["reaction_time"] = reaction_time
 
     state_occupancy           = {}
     biased_state_trial_info   = {}
@@ -397,7 +400,12 @@ def clean_dpca_data(averaged_data, trial_wise_data, alignments, compute_full=Tru
 # dPCA fitting
 # ──────────────────────────────────────────────────────────────────────────────
 
-def fit_dpca_on_alignment(fit_averaged, fit_trial_wise, n_components=3, marginalization_keys=None):
+def fit_dpca_on_alignment(
+    fit_averaged,
+    fit_trial_wise,
+    n_components=3,
+    marginalization_keys=('b', 's', 'c', 't'),
+):
     """Fit a single dPCA model on one alignment's cleaned data.
 
     Parameters
@@ -405,15 +413,13 @@ def fit_dpca_on_alignment(fit_averaged, fit_trial_wise, n_components=3, marginal
     fit_averaged         : ndarray (n_neurons, n_states, n_coh, n_choices, n_time) — no NaNs
     fit_trial_wise       : ndarray (n_trials, n_neurons, ..., n_time)
     n_components         : int, number of components per marginalization
-    marginalization_keys : list of label chars, default ['b', 's', 'c', 't']
+    marginalization_keys : sequence of label chars, default ('b', 's', 'c', 't')
 
     Returns
     -------
     dpca : fitted model with .explained_variance_ratio_ set
     Z    : dict[marginalization_key] → transformed data on the fit data
     """
-    if marginalization_keys is None:
-        marginalization_keys = ['b', 's', 'c', 't']
     dpca = dPCAlib.dPCA(
         n_components=n_components,
         labels=''.join(marginalization_keys),
@@ -425,7 +431,13 @@ def fit_dpca_on_alignment(fit_averaged, fit_trial_wise, n_components=3, marginal
     return dpca, Z
 
 
-def fit_dpca_all_alignments(fit_avg, fit_tw, alignments, n_components=3, marginalization_keys=None):
+def fit_dpca_all_alignments(
+    fit_avg,
+    fit_tw,
+    alignments,
+    n_components=3,
+    marginalization_keys=('b', 's', 'c', 't'),
+):
     """Fit one dPCA model per alignment.
 
     Returns
