@@ -22,8 +22,10 @@ class ephys_utils:
 class poisson_glm_utils:
     from .poisson_glm_utils import (convolve_with_basis,
                                     create_post_spike_history_matrix,
+                                    fit_poisson_glm,
                                     make_post_spike_history_basis,
                                     make_smooth_temporal_basis,
+                                    predict_poisson_glm,
                                     reconstruct_kernels_from_weights)
 
 __all__ = ["plot_utils", "pmf_utils", "glm_hmm_utils", "ephys_utils", "poisson_glm_utils"]

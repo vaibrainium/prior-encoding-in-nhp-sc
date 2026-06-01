@@ -1,0 +1,73 @@
+[project]
+name = "src"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Build deps
+    "numpy==2.2.6",
+    "cython==3.2.4",
+    "wheel==0.42.0",
+    # PyTorch
+    "torch==2.4.1+cu121",
+    "torchvision==0.19.1",
+    "torchaudio==2.4.1+cu121",
+    # C-extension packages
+    "scipy==1.15.3",
+    "matplotlib==3.10.8",
+    "numba==0.65.0",
+    "numexpr==2.14.1",
+    "pyarrow==23.0.1",
+    # SSM
+    "ssm @ git+https://github.com/vaibrainium/ssm.git",
+    # Core scientific stack
+    "pandas==2.3.3",
+    "scikit-learn==1.7.2",
+    "statsmodels==0.14.6",
+    "h5py==3.16.0",
+    "KDEpy==1.1.12",
+    "emcee==3.1.6",
+    # ML / modeling
+    "blackjax==1.3",
+    "sbi==0.26.1",
+    "dPCA==1.0.5",
+    "graphviz==0.21",
+    # Viz
+    "seaborn==0.12.2",
+    "bokeh==3.9.0",
+    "plotly==6.7.0",
+    "SciencePlots==2.2.1",
+    "matplotlib-venn==1.1.2",
+    # Dev tools
+    "click==8.3.1",
+    "pre_commit==4.5.1",
+    "flake8==7.3.0",
+    "black==26.3.1",
+    "isort==8.0.1",
+    "mypy==1.20.1",
+    "nbstripout==0.9.1",
+    # Config / utils
+    "PyYAML==6.0.3",
+    "python-dotenv==1.2.2",
+    "omegaconf==2.3.0",
+    "ipywidgets==8.1.8",
+    "pathlib2==2.3.7.post1",
+    "ipykernel>=7.2.0",
+    "mlflow>=3.12.0",
+    "cloudpickle>=3.1.2",
+]
+
+[tool.uv]
+package = true
+
+# Extra index for PyTorch cu121 wheels
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu121" }]
+torchvision = [{ index = "pytorch-cu121" }]
+torchaudio = [{ index = "pytorch-cu121" }]
