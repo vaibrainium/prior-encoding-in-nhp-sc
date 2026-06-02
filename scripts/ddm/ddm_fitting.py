@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 LIKELIHOOD_PARAMS = {
-    "chrono_weight": 1.5,
-    "caf_weight":    1.5,
-    "caf_bins":      5,
+    "nbins": 9,
+    "rt_nllh_weight": 1.0
 }
 
 FIXED_PARAMS = {
@@ -38,11 +37,6 @@ BASE_FREE_PARAMS = {
     "a":            FreeParam(0.5,  2.0),
     "z":            FreeParam(0.1,  0.9),
     "drift_gain":   FreeParam(1.0, 10.0),
-    # Tightened from (-5, 5): extreme offsets combine with any nonzero leak_rate
-    # to push the leak attractor outside the decision boundary, producing
-    # pathological fits (e.g. P(upper|coh=0) = 0.16 instead of ~0.5).
-    # The validate_params equilibrium check will also reject such combinations,
-    # so the tighter prior here guides DE away from them early.
     "drift_offset": FreeParam(-2.0, 2.0),
 }
 
