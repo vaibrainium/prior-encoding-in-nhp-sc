@@ -26,9 +26,9 @@ def prepare_data(
 
     return data
 
-def build_stimulus(data: pd.DataFrame) -> np.ndarray:
-
-    stimulus_length = max(100, int(np.clip(data["rt"].max(), 0, 5) * 1000))
+def build_stimulus(data: pd.DataFrame, rt_buffer: float = 1.5, max_seconds: float = 8.0) -> np.ndarray:
+    max_rt = float(np.clip(data["rt"].max() * rt_buffer, 0, max_seconds))
+    stimulus_length = max(100, int(max_rt * 1000))
 
     return np.tile(
         data["signed_coherence"].to_numpy()[:, None],
