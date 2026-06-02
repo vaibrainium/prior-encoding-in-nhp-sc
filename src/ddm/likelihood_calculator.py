@@ -208,10 +208,7 @@ class LikelihoodCalculator:
                 if len(rt_d) < 5:
                     # Too few DATA trials at this coherence to estimate a stable
                     # distribution. SKIP this coherence and keep accumulating the
-                    # others. (Previously this did `return 0`, which exited the
-                    # whole function with the *best possible* objective value, so
-                    # any session with one sparse coherence cell saw a flat-zero
-                    # landscape and the optimizer returned arbitrary parameters.)
+                    # others.
                     logger.warning(
                         f"Coherence {coh}: too few data trials ({len(rt_d)}), skipping."
                     )
