@@ -1,17 +1,22 @@
 import numpy as np
 
 class LikelihoodCalculator:
-    def __init__(self, nbins=9):
+    def __init__(self, nbins=9, rt_nllh_weight=1.0):
         """
         Class to compute Ratcliff-style QMLE likelihoods for diffusion model fits.
 
         Args:
             nbins (int): Number of quantile bins for RT likelihood estimation (default=9).
-
+            rt_nllh_weight (float): Scalar applied to the RT NLL before summing with
+                the choice NLL.  The two terms have different natural scales: choice NLL
+                is O(n_trials * log(2)) per coherence (~n*0.7) while RT NLL is
+                O(n_trials * nbins * log(nbins)) and grows with nbins.  The default of
+                1.0 sums them directly; increase to up-weight RT shape, decrease to
+                up-weight choice accuracy.
         """
         self.nbins = nbins
         self.eps = 1e-24  # small number to avoid log(0)
-        self.rt_nllh_weight = 1  #  1000.0
+        self.rt_nllh_weight = rt_nllh_weight
 
     def calculate_llh_QMLE(self, rt_model, rt_data):
         """
@@ -29,8 +34,8 @@ class LikelihoodCalculator:
         rt_data = np.sort(np.asarray(rt_data))
         n = len(rt_data)
         if self.nbins > n:
-            # Fallback: Use fewer bins or skip likelihood
-            nbins_used = max(1, n // 2)  # or just 1 bin if very low data
+            # Too few data trials to form stable bins — skip this cell.
+            return 0.0
         else:
             nbins_used = self.nbins
 
@@ -43,9 +48,6 @@ class LikelihoodCalculator:
 
         counts_per_bin = np.histogram(rt_data, bins=bin_edges)[0]
         probs_per_bin = np.histogram(rt_model, bins=bin_edges)[0] / len(rt_model)
-        # for data_count, model_prob in zip(counts_per_bin, probs_per_bin):
-        #     if data_count > 0 and model_prob == 0:
-        #         probs_per_bin += self.eps
         nllh = -np.sum(counts_per_bin * np.log(probs_per_bin + self.eps))
         return nllh
 
@@ -130,12 +132,7 @@ class LikelihoodCalculator:
                 continue
 
             # Choice likelihood per coherence
-            nllh_choice = 0.0
-            for choice_val in unique_choices:
-                n_choice_data = np.sum(choice_data_coh == choice_val)
-                p_choice_model = np.mean(choice_model_coh == choice_val)
-                nllh_choice -= n_choice_data * np.log(p_choice_model + self.eps)
-            total_nllh += nllh_choice
+            total_nllh += self.calculate_choice_likelihood(choice_model_coh, choice_data_coh)
 
             # RT likelihood per choice
             for choice_val in unique_choices:
