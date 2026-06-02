@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import logging
 import warnings
@@ -17,16 +16,16 @@ class LikelihoodCalculator:
     """
     Joint NLL combining three complementary signals:
 
-    1. Per-coherence KL divergence over (choice × RT-bin) joint distribution —
+    1. Per-coherence KL divergence over (choice x RT-bin) joint distribution,
        matches the full marginal shape at each coherence level.
 
-    2. Choice-conditional chronometric matching (per coherence, per boundary) —
+    2. Choice-conditional chronometric matching (per coherence, per boundary),
        directly penalizes mean RT mismatch for correct *and* error responses
        separately. This is the primary fix for the chronometric V-shape issue:
        the KL alone gives low weight to error-RT shape at high coherences because
        errors are rare, so log-mean-RT residuals fill that gap.
 
-    3. Global CAF term — pools across all non-zero coherences, bins by RT quantile,
+    3. Global CAF term, pools across all non-zero coherences, bins by RT quantile,
        penalizes accuracy-over-time mismatch. Constrains leak vs urgency.
     """
 
@@ -76,8 +75,12 @@ class LikelihoodCalculator:
 
         Each boundary (correct and error) contributes equally regardless of how
         rare it is. p_choice downweighting was suppressing error-RT signal ~20x
-        at high coherences, and the old mask_d < 3 guard silenced it entirely
-        (only ~1 error trial per coherence at ±0.5 coherence).
+        at high coherences.
+
+        Guard raised from (data<1, pred<3) to (data<3, pred<5): at the single
+        session level a coherence cell can have only 1 error trial, and a
+        squared log-ratio computed from one observation is pure noise that
+        injects a garbage gradient.
         """
         total = 0.0
         n_choices = 0
@@ -86,7 +89,7 @@ class LikelihoodCalculator:
             mask_d = ch_d == choice_val
             mask_p = ch_p == choice_val
 
-            if mask_d.sum() < 1 or mask_p.sum() < 3:
+            if mask_d.sum() < 3 or mask_p.sum() < 5:
                 continue
 
             mrt_d = np.mean(rt_d[mask_d])
@@ -99,7 +102,7 @@ class LikelihoodCalculator:
 
     def _caf_nll(self, rt_data, ch_data, coh_data, rt_pred, ch_pred, coh_pred):
         """
-        MSE between data and predicted CAF, scaled by n_obs × caf_weight.
+        MSE between data and predicted CAF, scaled by n_obs x caf_weight.
 
         RT quantile boundaries are derived from the data so bins are comparable.
         Coherence=0 trials excluded (no ground-truth correct answer).
@@ -130,7 +133,10 @@ class LikelihoodCalculator:
             caf_p.append(correct_p[bp].mean())
 
         if not caf_d:
-            return 1e6
+            # No overlapping RT support between data and prediction. This is a
+            # real mismatch but a flat 1e6 spike destabilizes DE. Penalize
+            # proportional to data size instead, consistent with the other terms.
+            return self.caf_weight * len(rt_d)
 
         mse = float(np.mean((np.array(caf_d) - np.array(caf_p)) ** 2))
         return self.caf_weight * len(rt_d) * mse
@@ -190,6 +196,7 @@ class LikelihoodCalculator:
             rt_data,    choice_data,  coh_data  = rt_data[vd],    choice_data[vd],  coh_data[vd]
 
             total = 0.0
+            scored_coherences = 0
 
             for coh in np.unique(coh_data):
                 dm = coh_data == coh
@@ -199,36 +206,45 @@ class LikelihoodCalculator:
                 rt_p, ch_p = rt_pred[pm], choice_pred[pm]
 
                 if len(rt_d) < 5:
-                    logger.warning(f"Coherence {coh}: too few data trials ({len(rt_d)}), skipping.")
+                    # Too few DATA trials at this coherence to estimate a stable
+                    # distribution. SKIP this coherence and keep accumulating the
+                    # others. (Previously this did `return 0`, which exited the
+                    # whole function with the *best possible* objective value, so
+                    # any session with one sparse coherence cell saw a flat-zero
+                    # landscape and the optimizer returned arbitrary parameters.)
+                    logger.warning(
+                        f"Coherence {coh}: too few data trials ({len(rt_d)}), skipping."
+                    )
                     continue
 
                 if len(rt_p) < 5:
-                    # Model predicts almost no crossings — clearly wrong parameters
+                    # Model predicts almost no crossings, clearly wrong parameters
                     # (boundary too wide, drift too weak, or time window too short).
                     # Penalize proportional to the data size so the signal is strong,
                     # but stay finite so gradient from other coherences is preserved.
                     logger.warning(
                         f"Coherence {coh}: only {len(rt_p)} predicted crossings "
-                        f"vs {len(rt_d)} data trials — adding crossing penalty."
+                        f"vs {len(rt_d)} data trials, adding crossing penalty."
                     )
                     total += 10.0 * len(rt_d)
+                    scored_coherences += 1
                     continue
 
                 if np.all(rt_d == rt_d[0]):
                     logger.warning(f"Coherence {coh}: degenerate RT distribution in data, skipping.")
-                    return 1e6
+                    continue
 
                 try:
                     boundaries = np.quantile(rt_d, self._q_grid)
                 except Exception:
-                    return 1e6
+                    continue
 
                 choice_vals  = np.unique(ch_d)
                 obs_counts   = self._joint_counts(rt_d, ch_d, boundaries, choice_vals)
                 pred_counts  = self._joint_counts(rt_p, ch_p, boundaries, choice_vals)
 
                 if obs_counts.sum() == 0 or pred_counts.sum() == 0:
-                    return 1e6
+                    continue
 
                 K      = len(obs_counts)
                 obs_p  = (obs_counts  + self.eps) / (obs_counts.sum()  + self.eps * K)
@@ -241,14 +257,21 @@ class LikelihoodCalculator:
                     return 1e6
 
                 total += kl
+                scored_coherences += 1
 
                 # Choice-conditional chronometric matching.
                 # Added directly inside the coherence loop so it scales with
-                # per-coherence trial count — consistent with the KL above.
+                # per-coherence trial count, consistent with the KL above.
                 if self.chrono_weight > 0:
                     total += self.chrono_weight * len(rt_d) * self._chronometric_nll(
                         rt_d, ch_d, rt_p, ch_p
                     )
+
+            # If not a single coherence was scorable, this parameter set tells us
+            # nothing. Return a large finite penalty rather than 0 so the optimizer
+            # is pushed away from this region instead of toward it.
+            if scored_coherences == 0:
+                return 1e6
 
             if self.caf_weight > 0:
                 total += self._caf_nll(
