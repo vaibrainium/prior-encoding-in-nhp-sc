@@ -1,5 +1,5 @@
 """
-ddm_simple.py — Simplified DDM simulation and fitting engine.
+ddm_simple.py - Simplified DDM simulation and fitting engine.
 
 Classes
 -------
@@ -228,7 +228,8 @@ class DecisionModel:
         verbose: bool = True,
     ) -> dict:
         """
-        Fit parameters via differential evolution.
+        Fit parameters via differential evolution, then a gradient-free local
+        refinement.
 
         Returns dict with keys: success, parameters, likelihood,
         n_iterations, optimization_result.
@@ -245,7 +246,9 @@ class DecisionModel:
         self._set_seed(self.seed)
 
         # Precompute all unit draws once so every objective evaluation sees the
-        # same random numbers (Common Random Numbers) — noise, sv, and sz alike.
+        # same random numbers (Common Random Numbers): noise, sv, and sz alike.
+        # This makes the objective deterministic in the parameters, which is what
+        # lets DE navigate it at all.
         n_trials, n_timepoints = stimulus.shape
         self._precomputed = self.simulator.precompute_noise(n_trials, n_timepoints, n_reps=n_reps)
 
@@ -256,7 +259,7 @@ class DecisionModel:
             nll = self._objective_function(values, data, stimulus, n_reps, l1_weight)
             if nll < best_nll[0]:
                 best_nll[0] = nll
-                best_vals[0] = values.copy()
+                best_vals[0] = np.asarray(values, dtype=float).copy()
             return nll
 
         iteration = [0]
@@ -271,43 +274,70 @@ class DecisionModel:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+
             de_result = differential_evolution(
                 objective,
                 bounds=bounds,
                 maxiter=max_iterations,
-                popsize=10,
+                popsize=15,          # modest bump from 10; cheap insurance for the
+                                     # 9-10 dim space, not the main fix.
                 seed=self.seed,
-                polish=True,
+                polish=False,        # the built-in polish is L-BFGS-B, which needs
+                                     # finite-difference gradients. On a CRN
+                                     # simulation objective those are ~0 for
+                                     # sub-dt perturbations, so the polish is at
+                                     # best a no-op and at worst misleading.
                 disp=False,
                 callback=callback if verbose else None,
             )
 
-            result = minimize(
+            # Local refinement with a gradient-free simplex method that tolerates
+            # the piecewise-constant structure of the simulation objective.
+            refine_result = minimize(
                 objective,
                 x0=de_result.x,
                 bounds=bounds,
-                method="L-BFGS-B",
-                options={"maxiter": max_iterations, "disp": True},
+                method="Nelder-Mead",
+                options={
+                    "maxiter": max_iterations,
+                    "xatol": 1e-4,
+                    "fatol": 1e-4,
+                    "disp": False,
+                },
             )
 
-        best = self._build_params(result.x)
+        # Return the best objective ACTUALLY observed, across DE, the refinement,
+        # and the running best tracked inside `objective`. Never trust a single
+        # optimizer's reported x over a better value we already evaluated.
+        candidates = [
+            (float(de_result.fun),     np.asarray(de_result.x, dtype=float)),
+            (float(refine_result.fun), np.asarray(refine_result.x, dtype=float)),
+        ]
+        if best_vals[0] is not None:
+            candidates.append((float(best_nll[0]), best_vals[0]))
+
+        best_fun, best_x = min(candidates, key=lambda t: t[0])
+        best = self._build_params(best_x)
+
+        success = bool(np.isfinite(best_fun) and best_fun < 1e6)
 
         if verbose:
-            logger.info("Optimization done. Cost: %.4f", result.fun)
+            logger.info("Optimization done. Cost: %.4f", best_fun)
             for name, val in best.items():
                 logger.info("  %s = %.4f", name, val)
 
-        if result.success:
+        if success:
             logger.info("Optimization successful.")
             self.fitted_params_ = best
-            self.optimization_result_ = result
+            self.optimization_result_ = de_result
 
         return {
-            "success":              result.success,
-            "parameters":          best,
-            "likelihood":          result.fun,
-            "n_iterations":        result.nit,
-            "optimization_result": result,
+            "success":              success,
+            "parameters":           best,
+            "likelihood":           best_fun,
+            "n_iterations":         int(getattr(de_result, "nit", 0)),
+            "optimization_result":  de_result,
+            "refine_result":        refine_result,
         }
 
     def simulate(
