@@ -200,7 +200,7 @@ class LikelihoodCalculator:
 
                 if len(rt_d) < 5:
                     logger.warning(f"Coherence {coh}: too few data trials ({len(rt_d)}), skipping.")
-                    return 0
+                    continue
 
                 if len(rt_p) < 5:
                     # Model predicts almost no crossings — clearly wrong parameters
