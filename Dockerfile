@@ -2,14 +2,11 @@ FROM ghcr.io/walkerlab/docker-pytorch-jupyter-cuda:cuda-11.8.0-pytorch-1.13.0-to
 
 LABEL maintainer='vaibrainium (vaibhavt459@gmail.com)'
 
-
+WORKDIR /src
 COPY . /src/
 
 RUN apt-get update -y
-# RUN apt-get upgrade -y
-RUN pip3 install -e /src/.
-RUN pip3 install cython
-RUN pip3 install -r /src/requirements.txt
 
-
-RUN pip3 install -U "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip3 install uv
+RUN uv pip install -e . # for development
+# RUN uv pip install --system . # for production, install in system python environment

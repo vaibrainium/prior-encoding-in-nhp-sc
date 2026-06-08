@@ -1,6 +1,7 @@
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+
 
 @dataclass
 class PoissonGLMConfig:
@@ -113,6 +114,7 @@ class PoissonGLMConfig:
         with open(path, "r") as f:
             data = json.load(f)
         return cls.from_dict(data)
+
 @dataclass
 class StateBasedPoissonGLMConfig:
     BIN_SIZE_MS: float = 1.0
@@ -182,10 +184,10 @@ class StateBasedPoissonGLMConfig:
 
     def get_total_features(self):
         return (
-            self.FEATURES_TARGET + 
-            self.FEATURES_STIMULUS + 
-            self.FEATURES_SACCADE + 
-            self.FEATURES_HISTORY + 
+            self.FEATURES_TARGET +
+            self.FEATURES_STIMULUS +
+            self.FEATURES_SACCADE +
+            self.FEATURES_HISTORY +
             self.FEATURES_INTERCEPT
         )
 

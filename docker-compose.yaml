@@ -7,20 +7,12 @@ services:
       - "${JUPYTER_PORT}:8888"
     environment:
       - "JUPYTER_PASSWORD=${JUPYTER_PASSWORD}"
+      - "PATH=/src/.venv/bin:$PATH"
     volumes:
       - ./:/src/
       - "${DATAPATH}:/mnt/prior-data"
 
-    # command: sleep infinity; nvidia-smi;
-    command: >
-      bash -c "
-        pip uninstall -y ssm &&
-        pip install --upgrade --force-reinstall --no-cache-dir numpy cython &&
-        pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git &&
-        pip install --upgrade --force-reinstall --no-binary :all: <package> &&
-        pip install -r requirements.txt &&
-        jupyter lab --ip=0.0.0.0 --no-browser --allow-root
-      "
+    command: jupyter lab --ip=0.0.0.0 --no-browser --allow-root
 
     deploy:
       resources:
@@ -30,11 +22,4 @@ services:
               capabilities: [gpu]
 
         limits:
-          memory: 35G
-
-
-# pip uninstall -y ssm
-# pip install --upgrade --force-reinstall --no-cache-dir numpy cython
-# pip install --no-cache-dir --force-reinstall git+https://github.com/vaibrainium/ssm.git
-# pip install --upgrade --force-reinstall --no-binary :all: <package>
-# pip install -r requirements.txt
+          memory: 100G

@@ -1,11 +1,13 @@
+from collections import OrderedDict
+
 import numpy as np
 import torch
-from torch.nn.init import normal, constant
 from torch import nn
-from torch.utils.data import TensorDataset, DataLoader
 from torch.autograd import Variable
 from torch.nn import functional as F
-from collections import OrderedDict
+from torch.nn.init import constant, normal
+from torch.utils.data import DataLoader, TensorDataset
+
 
 class FixedLikelihoodNet(nn.Module):
 	def __init__(self, n_channel, n_hidden, n_output, dropout=0.5, sigma_init=3, std=0.01):
@@ -99,4 +101,3 @@ class FixedLikelihoodNet(nn.Module):
 		self.apply(fn)
 		self.likelihood.data.copy_(
 			-(torch.arange(self.n_likelihood).view(1, 1, 1, -1) - self.n_likelihood // 2).pow(2) / 2 / self.sigma_init ** 2)
-

@@ -1,4 +1,3 @@
-
 import pickle
 import time
 import warnings
@@ -15,8 +14,6 @@ from scipy.special import gammaln
 from sklearn.metrics import mean_squared_error, r2_score
 
 warnings.filterwarnings('ignore')
-
-
 
 def make_smooth_temporal_basis(duration, bin_size=1.0, filter_type="raised_cosine", center_spacing=None, n_bases=None):
     """Fast raised cosine basis function creation."""
@@ -326,3 +323,75 @@ def reconstruct_kernels_from_weights(weights, config):
     }
 
     return kernels
+
+
+def fit_poisson_glm(X, y):
+    if issparse(X):
+        X = X.toarray()
+
+    X_means = X.mean(axis=0)
+    X_stds = X.std(axis=0)
+    X_stds[X_stds < 1e-8] = 1.0
+
+    X_scaled = X.copy()
+    X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
+
+    # Ridge penalty applied in physical (un-scaled) space:
+    #   physical weight k_j = w_j / σ_j  →  penalty = λ * Σ (w_j/σ_j)²
+    # Intercept (last column) is excluded from regularization.
+    lam = 0.1
+    inv_stds_sq = 1.0 / X_stds[:-1] ** 2  # shape (F-1,)
+
+    def loss_fun(w):
+        eta = X_scaled @ w
+        if np.any(y[eta < -15] > 0):
+            return 1e20
+        eta = np.clip(eta, -15, 15)
+        mu = np.exp(eta)
+        ridge = lam * np.dot(w[:-1] ** 2, inv_stds_sq)
+        return np.sum(mu) - np.dot(y, eta) + ridge
+
+    def grad_fun(w):
+        eta = np.clip(X_scaled @ w, -15, 15)
+        mu = np.exp(eta)
+        g = X_scaled.T @ (mu - y)
+        g[:-1] += 2.0 * lam * w[:-1] * inv_stds_sq
+        return g
+
+    w_init = np.zeros(X_scaled.shape[1])
+    w_init[-1] = np.log(max(y.mean(), 1e-8))
+
+    result = minimize(
+        fun=loss_fun,
+        x0=w_init,
+        method='L-BFGS-B',
+        jac=grad_fun,
+        options={'maxiter': 1000, 'gtol': 1e-3, 'ftol': 1e-5, 'maxfun': 200},
+    )
+
+    if result.success or result.fun < 1e6:
+        eta = X_scaled @ result.x
+        result['predicted_y'] = np.exp(np.clip(eta, -15, 15))
+        result['X_means'] = X_means
+        result['X_stds'] = X_stds
+        # Physical (un-scaled) weights for kernel visualisation:
+        #   log λ = Σ k_j * x_j + b_physical
+        #   k_j = w_j / σ_j,  b = w_intercept - Σ k_j * μ_j
+        k = result.x[:-1] / X_stds[:-1]
+        b = result.x[-1] - np.dot(k, X_means[:-1])
+        result['w_physical'] = np.append(k, b)
+    else:
+        print(f"  Optimization failed: {result.message}")
+        return None
+
+    return result
+
+
+def predict_poisson_glm(X, model):
+    if issparse(X):
+        X = X.toarray()
+    X_means = model['X_means']
+    X_stds = model['X_stds']
+    X_scaled = X.copy()
+    X_scaled[:, :-1] = (X[:, :-1] - X_means[:-1]) / X_stds[:-1]
+    return np.exp(np.clip(X_scaled @ model.x, -15, 15))
