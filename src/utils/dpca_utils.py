@@ -736,11 +736,12 @@ def _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8):
     return trainX, testX
 
 
-def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
+def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None, refit=True):
     """Run n_splits train/test splits and average classification scores.
 
     key_groups : dict[key → groups] passed to _classification for binary grouping,
                  e.g. {'s': [[0,1],[2,3]]} to test low vs high coherence.
+    refit      : if False, skip dpca.fit() and use the already-fitted axes as-is.
     """
     K = X.shape[-1]
     if isinstance(dpca.n_components, int):
@@ -751,7 +752,8 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
     for shuffle in range(n_splits):
         # trainX, validX = _dpca_train_test_split(dpca, X, trialX)  # LOO: noisy single-trial test
         trainX, validX = _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8)
-        dpca.fit(trainX)
+        if refit:
+            dpca.fit(trainX)
         dpca, trainZ = dpca_transform(dpca, trainX)
         dpca, validZ = dpca_transform(dpca, validX)
 
@@ -783,7 +785,7 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
     return scores
 
 
-def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
+def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups, refit=True):
     """Single shuffle iteration for parallel execution."""
     import copy
     dpca = copy.deepcopy(dpca)
@@ -800,14 +802,22 @@ def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
     del count, nan_mask
 
     no_nan = ~np.any(np.isnan(X_s), axis=tuple(range(X_s.ndim - 1)))
+    K_orig = no_nan.shape[0]
     X_s = X_s[..., no_nan]
     if no_nan.all():
         trialX_trimmed = trialX_s                    # all timepoints valid: skip the extra copy
     else:
         trialX_trimmed = trialX_s[..., no_nan]
     del trialX_s                                     # free shuffled array before compute_mean_score
+
+    # Sparse conditions (e.g. error trials) can leave 0 valid timepoints after shuffling.
+    # Return NaN scores so nanquantile skips this shuffle when building the null.
+    if X_s.shape[-1] == 0:
+        ncomps = dpca.n_components if isinstance(dpca.n_components, int) else max(dpca.n_components.values())
+        return {key: np.full((ncomps, K_orig), np.nan) for key in keys}, None
+
     dpca, Z = dpca_transform(dpca, X_s)
-    score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups)
+    score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups, refit=refit)
     return score, Z
 
 
@@ -834,7 +844,7 @@ def dpca_significance_analysis(
     dpca, X, trialX,
     n_shuffles=100, n_splits=100, n_consecutive=1,
     full=False, keys=None, n_jobs=-1,
-    key_groups=None, smooth_sigma=None,
+    key_groups=None, smooth_sigma=None, refit=True,
 ):
     """Compute significance masks using a nearest-centroid classifier with shuffled null.
 
@@ -858,6 +868,9 @@ def dpca_significance_analysis(
                     quantile. Smoothing removes high-frequency noise from the score trace,
                     so the resulting mask reflects sustained significance rather than isolated
                     spikes. When None, falls back to the n_consecutive denoising approach.
+    refit         : if False, skip dpca.fit() on each split and use the provided axes as-is.
+                    Use this when projecting new data (e.g. error trials) through axes already
+                    fitted on a different dataset (e.g. correct trials).
 
     Returns
     -------
@@ -907,7 +920,7 @@ def dpca_significance_analysis(
         pass
 
     print(f"Computing true score ({n_splits} splits)...", flush=True)
-    true_score = _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=key_groups)
+    true_score = _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=key_groups, refit=refit)
     print("True score done.")
 
     if smooth_sigma is not None:
@@ -916,7 +929,7 @@ def dpca_significance_analysis(
 
     print(f"Running {n_shuffles} shuffles ({n_jobs} parallel jobs)...", flush=True)
     shuffle_results = Parallel(n_jobs=n_jobs, verbose=10, max_nbytes='1M')(
-        delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups)
+        delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups, refit)
         for _ in range(n_shuffles)
     )
     print("Shuffles done. Computing masks...")
