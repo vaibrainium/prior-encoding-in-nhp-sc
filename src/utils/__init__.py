@@ -17,7 +17,7 @@ class glm_hmm_utils:
 
 
 class ephys_utils:
-	from .ephys_utils import get_neural_data_from_trial_num, get_trial_num
+	from .ephys_utils import get_neural_data_from_trial_num, get_trial_num, get_windowed_spike_count, get_neuron_ids
 
 class poisson_glm_utils:
     from .poisson_glm_utils import (convolve_with_basis,
