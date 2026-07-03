@@ -1,7 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from src.utils import dpca_utils
+from src.utils import dpca_utils, ephys_utils
 from config import dir_config
 from dataclasses import dataclass
 from typing import Callable
@@ -82,6 +82,82 @@ def get_label_pseudo_trials(trial_data_event: np.ndarray, label_axis: int, label
     X = X.transpose(0, 2, 1, 3).reshape(-1, n_neurons, n_timebins)  # (n_trials*n_other, n_neurons, n_timebins)
     valid = ~np.isnan(X[:, :, 0]).any(axis=1)         # drop rows with any NaN neuron
     return X[valid]
+
+
+def get_session_trial_data(sessions, trial_info, neuron_metadata, ephys_data, alignments):
+    """Extract per-session spike trains aligned to trial_info labels.
+
+    Each session independently contributes spike trains for all its valid trials.
+    Intended for pseudo-population decoding where sessions are stacked neuron-wise
+    and each session independently samples trials per label value — avoiding the
+    NaN sparsity of condition-indexed tensors.
+
+    Returns
+    -------
+    session_data : {event: {session_id: {
+                        "spikes"    : (n_trials, n_session_neurons, n_timebins),
+                        "coherence" : (n_trials,),
+                        "choice"    : (n_trials,),
+                        "hmm_state" : (n_trials,),
+                    }}}
+    neuron_positions : {session_id: ndarray}  -- global indices into sorted neuron_ids
+    n_total_neurons  : int
+    label_values     : {"coherence": ndarray, "choice": ndarray, "hmm_state": ndarray}
+    """
+    neuron_ids      = ephys_utils.get_neuron_ids(neuron_metadata, sessions)
+    n_total_neurons = len(neuron_ids)
+
+    neuron_positions = {}
+    for session_id in sessions:
+        s_nids = neuron_metadata.loc[neuron_metadata.session_id == session_id, "neuron_id"].values
+        s_nids = s_nids[np.isin(s_nids, neuron_ids)]
+        if len(s_nids):
+            neuron_positions[session_id] = np.searchsorted(neuron_ids, s_nids)
+
+    label_values = {
+        "coherence": np.sort(trial_info.signed_coherence.unique()),
+        "choice":    np.sort(trial_info.choice.unique()),
+        "hmm_state": np.sort(trial_info.hmm_state.unique()),
+    }
+
+    session_data = {}
+    for event in alignments:
+        session_data[event] = {}
+        for session_id in sessions:
+            if session_id not in neuron_positions:
+                continue
+            session_ti = trial_info[trial_info.session_id == session_id].reset_index(drop=True)
+            if len(session_ti) == 0:
+                continue
+            s_nids = neuron_metadata.loc[neuron_metadata.session_id == session_id, "neuron_id"].values
+            s_nids = s_nids[np.isin(s_nids, neuron_ids)]
+
+            ref_trials = np.array(ephys_data[event][s_nids[0]]["trial_number"])
+            wanted     = session_ti.trial_num.values
+            sorter     = np.argsort(ref_trials)
+            pos        = np.searchsorted(ref_trials[sorter], wanted)
+            pos        = np.clip(pos, 0, len(sorter) - 1)
+            row_idx    = sorter[pos]
+            valid      = ref_trials[row_idx] == wanted
+            row_idx    = row_idx[valid]
+            session_ti = session_ti[valid].reset_index(drop=True)
+
+            if len(row_idx) == 0:
+                continue
+
+            spikes = np.stack([
+                np.array(ephys_data[event][nid]["convolved_spike_trains"])[row_idx]
+                for nid in s_nids
+            ]).transpose(1, 0, 2)   # (n_trials, n_session_neurons, n_timebins)
+
+            session_data[event][session_id] = {
+                "spikes":    spikes,
+                "coherence": session_ti.signed_coherence.values,
+                "choice":    session_ti.choice.values,
+                "hmm_state": session_ti.hmm_state.values,
+            }
+
+    return session_data, neuron_positions, n_total_neurons, label_values
 
 
 def get_binned_counts(X_valid: np.ndarray, sample_idx: np.ndarray, t0: int, t1: int) -> np.ndarray:
