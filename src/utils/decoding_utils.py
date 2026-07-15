@@ -139,9 +139,10 @@ def get_session_trial_data(
             neuron_positions[session_id] = np.searchsorted(neuron_ids, session_neuron_ids)
 
     label_values = {
-        "abs_coherence": np.sort(trial_info.signed_coherence.abs().unique()),
-        "choice":        np.sort(trial_info.choice.unique()),
-        "hmm_state":     np.sort(trial_info.hmm_state.unique()),
+        "abs_coherence":    np.sort(trial_info.signed_coherence.abs().unique()),
+        "difficulty_level": np.array([0, 1]),   # 1=hard (|coh|<0.2: {0,0.06}) / 0=easy (|coh|>=0.2: {0.2,0.5})
+        "choice":           np.sort(trial_info.choice.unique()),
+        "hmm_state":        np.sort(trial_info.hmm_state.unique()),
     }
 
     session_data = {}
@@ -175,10 +176,11 @@ def get_session_trial_data(
             ]).transpose(1, 0, 2)   # (n_trials, n_session_neurons, n_timebins)
 
             session_data[alignment][session_id] = {
-                "spikes":        spikes,
-                "abs_coherence": np.abs(session_trial_info.signed_coherence.values),
-                "choice":        session_trial_info.choice.values,
-                "hmm_state":     session_trial_info.hmm_state.values,
+                "spikes":            spikes,
+                "abs_coherence":     np.abs(session_trial_info.signed_coherence.values),
+                "difficulty_level":  (np.abs(session_trial_info.signed_coherence.values) < 0.2).astype(int),
+                "choice":            session_trial_info.choice.values,
+                "hmm_state":         session_trial_info.hmm_state.values,
             }
 
     return session_data, neuron_positions, n_total_neurons, label_values
