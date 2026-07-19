@@ -16,6 +16,9 @@ get_neuron_ids                        – filter neurons by session / classifica
 split_trial_info_half                 – 50/50 random trial split for fit-vs-test workflows
 dpca_significance_analysis            – nearest-centroid significance masks with shuffled null;
                                         pass key_groups={'s': [[0,1],[2,3]]} for binary low/high test
+dpca_cross_significance_analysis      – cross-period significance with a rigorous shared-trial split:
+                                        refit axes on 80% fit-epoch trials, decode the held-out 20%
+                                        in the projection epoch (no trial leakage); consistent null
 
 Condition dimension (first non-neuron axis)
 -------------------------------------------
@@ -346,53 +349,55 @@ def create_dpca_matrix(
 # ──────────────────────────────────────────────────────────────────────────────
 # NaN cleaning
 # ──────────────────────────────────────────────────────────────────────────────
-
 def clean_dpca_data(averaged_data, trial_wise_data, alignments, compute_full=True):
     """Remove NaN-polluted timepoints and return two variants of the cleaned arrays.
-
     fit_avg / fit_tw   – any-NaN timepoints removed; safe to pass directly to dPCA.fit()
     full_avg / full_tw – only all-NaN timepoints removed; used for cross-period projection
                          (None, None when compute_full=False — saves ~2× peak memory)
-
     Parameters
     ----------
     averaged_data   : dict[alignment] → ndarray (n_neurons, *cond_dims, n_time)
     trial_wise_data : dict[alignment] → ndarray (n_trials, n_neurons, *cond_dims, n_time)
     alignments      : iterable of alignment keys
     compute_full    : if False, skip full_avg / full_tw; returns (fit_avg, fit_tw, None, None)
-
     Returns
     -------
     fit_avg, fit_tw, full_avg, full_tw : four dicts with the same alignment keys
     """
     fit_avg = {a: averaged_data[a].copy() for a in alignments}
     fit_tw  = {a: trial_wise_data[a].copy() for a in alignments}
-
     for alignment in alignments:
-        # fit arrays: drop timepoints where ANY condition has a NaN average
-        no_any_nan = ~np.any(np.isnan(fit_avg[alignment]), axis=(0, 1, 2, 3))
-        fit_avg[alignment] = fit_avg[alignment][..., no_any_nan]
+        # fit arrays: drop timepoints where ANY *present* condition has a NaN average.
+        # Entirely-missing conditions (all-NaN) are excluded so they don't mask all timepoints.
+        avg = fit_avg[alignment]
+        present = ~np.all(np.isnan(avg), axis=(0, 4))          # (c1,c2,c3): True = has data
+        has_nan = np.any(np.isnan(avg), axis=0)                 # (c1,c2,c3,n_time)
+        no_any_nan = ~np.any(has_nan & present[..., np.newaxis], axis=(0, 1, 2))
+        fit_avg[alignment] = avg[..., no_any_nan]
         fit_tw[alignment]  = fit_tw[alignment][..., no_any_nan]
-
-        # drop all-NaN trial rows
-        nonnan_trial = ~np.all(np.isnan(fit_tw[alignment]), axis=(1, 2, 3, 4, 5))
+        # drop trial rows that are all-NaN in every *present* condition
+        tw = fit_tw[alignment]
+        present_tw  = ~np.all(np.isnan(tw), axis=(0, 1, 5))    # (c1,c2,c3)
+        row_valid   = ~np.all(np.isnan(tw), axis=(1, 5))        # (n_trials,c1,c2,c3)
+        nonnan_trial = np.any(row_valid & present_tw[np.newaxis], axis=(1, 2, 3))
         fit_tw[alignment] = fit_tw[alignment][nonnan_trial]
-
     if not compute_full:
         return fit_avg, fit_tw, None, None
-
     full_avg = {a: averaged_data[a].copy() for a in alignments}
     full_tw  = {a: trial_wise_data[a].copy() for a in alignments}
-
     for alignment in alignments:
-        # full arrays: drop timepoints where ALL conditions are NaN
-        no_all_nan = ~np.all(np.isnan(full_avg[alignment]), axis=(0, 1, 2, 3))
-        full_avg[alignment] = full_avg[alignment][..., no_all_nan]
+        # full arrays: drop timepoints where ALL *present* conditions are NaN
+        favg = full_avg[alignment]
+        present_f = ~np.all(np.isnan(favg), axis=(0, 4))
+        all_nan_f = np.all(np.isnan(favg), axis=0)
+        no_all_nan = ~np.all(all_nan_f | ~present_f[..., np.newaxis], axis=(0, 1, 2))
+        full_avg[alignment] = favg[..., no_all_nan]
         full_tw[alignment]  = full_tw[alignment][..., no_all_nan]
-
-        nonnan_trial_full = ~np.all(np.isnan(full_tw[alignment]), axis=(1, 2, 3, 4, 5))
+        ftw = full_tw[alignment]
+        present_ftw  = ~np.all(np.isnan(ftw), axis=(0, 1, 5))
+        row_valid_f  = ~np.all(np.isnan(ftw), axis=(1, 5))
+        nonnan_trial_full = np.any(row_valid_f & present_ftw[np.newaxis], axis=(1, 2, 3))
         full_tw[alignment] = full_tw[alignment][nonnan_trial_full]
-
     return fit_avg, fit_tw, full_avg, full_tw
 
 
@@ -736,22 +741,27 @@ def _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8):
     return trainX, testX
 
 
-def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
+def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None, refit=True):
     """Run n_splits train/test splits and average classification scores.
 
-    key_groups : dict[key → groups] passed to _classification for binary grouping,
-                 e.g. {'s': [[0,1],[2,3]]} to test low vs high coherence.
+    key_groups : dict[key → groups] for binary grouping, e.g. {'s': [[0,1],[2,3]]}.
+    refit      : if False, skip dpca.fit() and use the already-fitted axes as-is.
+
+    (Cross-period projection decoding lives in dpca_cross_significance_analysis, which
+    refits on the fit epoch and decodes the projection epoch — see that function.)
     """
     K = X.shape[-1]
+    time_axis = len(X.shape) - 2
+
     if isinstance(dpca.n_components, int):
         scores = {key: np.empty((dpca.n_components, n_splits, K)) for key in keys}
     else:
         scores = {key: np.empty((dpca.n_components[key], n_splits, K)) for key in keys}
 
     for shuffle in range(n_splits):
-        # trainX, validX = _dpca_train_test_split(dpca, X, trialX)  # LOO: noisy single-trial test
         trainX, validX = _dpca_train_test_split_fraction(X, trialX, train_fraction=0.8)
-        dpca.fit(trainX)
+        if refit:
+            dpca.fit(trainX)
         dpca, trainZ = dpca_transform(dpca, trainX)
         dpca, validZ = dpca_transform(dpca, validX)
 
@@ -759,16 +769,15 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
             ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]
             axset = dpca.marginalizations[key]
             axset = axset if isinstance(axset, set) else set.union(*axset)
-            # Always exclude the time axis so scores are resolved over time, not collapsed to a
-            # scalar. Without this exclusion, time gets averaged and the score is broadcast to a
-            # flat line across all K timepoints.
-            time_axis = len(X.shape) - 2
             axes = set(range(len(X.shape) - 1)) - axset - {time_axis}
             for ax in list(axes)[::-1]:
                 trainZ[key] = np.nanmean(trainZ[key], axis=ax + 1)
                 validZ[key] = np.nanmean(validZ[key], axis=ax + 1)
-            trainZ[key] = trainZ[key].reshape((ncomps, -1, K))
-            validZ[key] = validZ[key].reshape((ncomps, -1, K))
+            try:
+                trainZ[key] = trainZ[key].reshape((ncomps, -1, K))
+                validZ[key] = validZ[key].reshape((ncomps, -1, K))
+            except ValueError as e:
+                raise ValueError(f"Reshape failed for key={key!r} (ncomps={ncomps}, K={K}): trainZ={trainZ[key].shape}, validZ={validZ[key].shape}") from e
 
         for key in keys:
             ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]
@@ -783,7 +792,7 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None):
     return scores
 
 
-def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
+def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups, refit=True):
     """Single shuffle iteration for parallel execution."""
     import copy
     dpca = copy.deepcopy(dpca)
@@ -799,15 +808,24 @@ def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups):
     X_s[count == 0] = np.nan
     del count, nan_mask
 
-    no_nan = ~np.any(np.isnan(X_s), axis=tuple(range(X_s.ndim - 1)))
+    missing_cond = np.all(np.isnan(X_s), axis=(0, -1), keepdims=True)  # (1,*cond_dims,1)
+    no_nan = ~np.any(np.isnan(X_s) & ~missing_cond, axis=tuple(range(X_s.ndim - 1)))
+    del missing_cond
+    K_orig = no_nan.shape[0]
     X_s = X_s[..., no_nan]
     if no_nan.all():
         trialX_trimmed = trialX_s                    # all timepoints valid: skip the extra copy
     else:
         trialX_trimmed = trialX_s[..., no_nan]
     del trialX_s                                     # free shuffled array before compute_mean_score
+
+    # Sparse conditions (e.g. error trials) can leave 0 valid timepoints after shuffling.
+    # Return NaN scores so nanquantile skips this shuffle when building the null.
+    if X_s.shape[-1] == 0:
+        return {key: np.full(((dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]), K_orig), np.nan) for key in keys}, None
+
     dpca, Z = dpca_transform(dpca, X_s)
-    score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups)
+    score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups, refit=refit)
     return score, Z
 
 
@@ -834,7 +852,7 @@ def dpca_significance_analysis(
     dpca, X, trialX,
     n_shuffles=100, n_splits=100, n_consecutive=1,
     full=False, keys=None, n_jobs=-1,
-    key_groups=None, smooth_sigma=None,
+    key_groups=None, smooth_sigma=None, refit=True,
 ):
     """Compute significance masks using a nearest-centroid classifier with shuffled null.
 
@@ -858,13 +876,18 @@ def dpca_significance_analysis(
                     quantile. Smoothing removes high-frequency noise from the score trace,
                     so the resulting mask reflects sustained significance rather than isolated
                     spikes. When None, falls back to the n_consecutive denoising approach.
+    refit         : if False, skip dpca.fit() on each split and use the provided axes as-is.
+                    Use this when projecting new data (e.g. error trials) through axes already
+                    fitted on a different dataset (e.g. correct trials), within one alignment.
+                    For cross-period (epoch→epoch) projection significance use
+                    dpca_cross_significance_analysis instead.
 
     Returns
     -------
-    masks : dict[key] → (n_components, T) bool array
-    true_score : dict[key] → (n_components, T) float array  — classifier accuracy on real data
-                 (smoothed when smooth_sigma is set)
-    scores : dict[key] → list of (n_components, T) float arrays  — null distribution per shuffle
+    masks      : dict[key] → (n_components, T) bool
+    true_score : dict[key] → (n_components, T), classifier accuracy on real data
+                 (smoothed when smooth_sigma set)
+    scores     : dict[key] → list of null-distribution arrays per shuffle
     shuffled_transformed_data : list  — only returned when full=True
     """
     if dpca.opt_regularizer_flag:
@@ -892,7 +915,7 @@ def dpca_significance_analysis(
         import psutil as _psutil
         _mem_avail = _psutil.virtual_memory().available
         _mem_per_worker = 3 * trialX.nbytes
-        _max_safe = max(1, int(_mem_avail * 0.5 / _mem_per_worker))
+        _max_safe = max(1, int(_mem_avail * 0.5 / _mem_per_worker)) if _mem_per_worker > 0 else n_jobs
         _n_cpu = _os.cpu_count() or 1
         _requested = (_n_cpu + 1 + n_jobs) if n_jobs < 0 else n_jobs
         _effective = min(_requested, _max_safe)
@@ -907,7 +930,10 @@ def dpca_significance_analysis(
         pass
 
     print(f"Computing true score ({n_splits} splits)...", flush=True)
-    true_score = _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=key_groups)
+    true_score = _compute_mean_score(
+        dpca, X, trialX, n_splits, keys,
+        key_groups=key_groups, refit=refit,
+    )
     print("True score done.")
 
     if smooth_sigma is not None:
@@ -916,19 +942,18 @@ def dpca_significance_analysis(
 
     print(f"Running {n_shuffles} shuffles ({n_jobs} parallel jobs)...", flush=True)
     shuffle_results = Parallel(n_jobs=n_jobs, verbose=10, max_nbytes='1M')(
-        delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups)
+        delayed(_shuffle_worker)(dpca, trialX, n_splits, keys, key_groups, refit)
         for _ in range(n_shuffles)
     )
     print("Shuffles done. Computing masks...")
-    scores = {key: [r[0][key] for r in shuffle_results] for key in keys}
     shuffled_transformed_data = [r[1] for r in shuffle_results]
 
+    scores = {key: [r[0][key] for r in shuffle_results] for key in keys}
     if smooth_sigma is not None:
         scores = {
             key: [_smooth_score_array(s, smooth_sigma) for s in scores[key]]
             for key in keys
         }
-
     masks = {key: np.full(true_score[key].shape, False) for key in keys}
     for key in keys:
         min_len = min(s.shape[1] for s in scores[key])
@@ -936,16 +961,355 @@ def dpca_significance_analysis(
             np.dstack([s[:, :min_len] for s in scores[key]]), 0.95, axis=-1
         )
         masks[key][:, :min_len] = true_score[key][:, :min_len] >= quantile_score
-
     if smooth_sigma is None and n_consecutive > 1:
-        # Legacy denoising: zero out runs shorter than n_consecutive in the binary mask.
-        # Prefer smooth_sigma for continuous smoothing of the score trace before thresholding.
         for key in keys:
             for k in range(masks[key].shape[0]):
                 masks[key][k] = _denoise_mask(masks[key][k].astype(np.int32), n_consecutive)
 
     if full:
         return masks, true_score, scores, shuffled_transformed_data
+    return masks, true_score, scores
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Cross-period significance — rigorous shared-trial split
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _dpca_paired_split_fraction(fit_X, fit_trialX, proj_Xs, proj_trialXs, train_fraction=0.8):
+    """Shared-trial 80/20 split: one partition per (neuron, condition) cell, defined on the
+    FIT epoch's valid trials and reused for every projection epoch.
+
+      trainX_fit       : mean of the 80% train trials, FIT epoch         → dpca.fit() axes
+      trainX_projs[pa] : mean of the same 80% trials,   proj epoch ``pa`` → classifier centroids
+      validX_projs[pa] : mean of the 20% held-out trials, proj epoch ``pa`` → test points
+
+    The held-out test trials never enter the axis fit nor any centroid → no leakage. Because
+    the SAME partition is reused across proj epochs, the axes are fit only once per split
+    (see _compute_cross_mean_score). ``proj_Xs`` / ``proj_trialXs`` are dicts keyed by
+    proj-epoch name. Requires axis-0 (trial) correspondence between every epoch (true after
+    clean_dpca_data, which only drops a shared padding tail).
+
+    Returns
+    -------
+    trainX_fit                 : mean-centred fit-epoch averages
+    trainX_projs, validX_projs : dicts[pa] of mean-centred proj-epoch averages
+    """
+    import itertools
+    n_neurons   = fit_X.shape[0]
+    cond_shape  = fit_X.shape[1:-1]
+    proj_aligns = list(proj_Xs.keys())
+    trainX_fit   = np.full_like(fit_X, np.nan)
+    trainX_projs = {pa: np.full_like(proj_Xs[pa], np.nan) for pa in proj_aligns}
+    validX_projs = {pa: np.full_like(proj_Xs[pa], np.nan) for pa in proj_aligns}
+
+    for idx in itertools.product(*[range(d) for d in cond_shape]):
+        for n in range(n_neurons):
+            sel_f = fit_trialX[(slice(None), n) + idx + (slice(None),)]   # (n_trials, T_fit)
+            vi = np.where(~np.all(np.isnan(sel_f), axis=1))[0]            # rows valid in fit epoch
+            if len(vi) == 0:
+                continue
+            perm    = np.random.permutation(len(vi))
+            if len(vi) == 1:
+                tr, te = vi, vi[:0]          # single valid trial → train; no held-out test
+            else:
+                n_train = min(max(1, int(round(len(vi) * train_fraction))), len(vi) - 1)
+                tr, te  = vi[perm[:n_train]], vi[perm[n_train:]]
+            dest    = (n,) + idx + (slice(None),)
+            if tr.size:
+                f_mean = np.nanmean(sel_f[tr], axis=0)
+                f_nan  = np.isnan(f_mean); f_mean[f_nan] = fit_X[dest][f_nan]
+                trainX_fit[dest] = f_mean
+            for pa in proj_aligns:
+                sel_p = proj_trialXs[pa][(slice(None), n) + idx + (slice(None),)]
+                if tr.size:
+                    p_mean = np.nanmean(sel_p[tr], axis=0)
+                    p_nan  = np.isnan(p_mean); p_mean[p_nan] = proj_Xs[pa][dest][p_nan]
+                    trainX_projs[pa][dest] = p_mean
+                if te.size:
+                    validX_projs[pa][dest] = np.nanmean(sel_p[te], axis=0)
+
+    trainX_fit -= np.nanmean(_flat2d(trainX_fit), 1)[(np.s_[:],) + (None,) * (fit_X.ndim - 1)]
+    for pa in proj_aligns:
+        bcast = (np.s_[:],) + (None,) * (proj_Xs[pa].ndim - 1)
+        trainX_projs[pa] -= np.nanmean(_flat2d(trainX_projs[pa]), 1)[bcast]
+        validX_projs[pa] -= np.nanmean(_flat2d(validX_projs[pa]), 1)[bcast]
+    return trainX_fit, trainX_projs, validX_projs
+
+
+def _shuffle_labels_paired(fit_trialX, proj_trialXs, rng):
+    """Kobak-style global label shuffle, paired across epochs.
+
+    Faithful to ``dPCA.shuffle_labels`` (machenslab/dPCA), which the self-period test uses
+    via _shuffle_worker: the occupied (trial, neuron, condition) slots are permuted jointly,
+    so the null scrambles neuron identity as well as condition. The single permutation here
+    is applied identically to the fit epoch and EVERY projection epoch, so each occupied
+    slot's data travels together across epochs (required for leak-free cross-period decoding).
+    A slot counts as occupied if it holds data in the fit epoch or any projection epoch; the
+    set of occupied slots is preserved (only their contents are permuted among themselves).
+
+    ``proj_trialXs`` is a dict[pa] of trial-wise arrays sharing fit_trialX's leading
+    (trial, neuron, *cond) axes. Returns (fit_trialX_s, dict[pa] → proj_trialX_s).
+    """
+    proj_aligns = list(proj_trialXs.keys())
+    # Flatten every non-time axis (trial, neuron, *cond) into rows; time stays as columns.
+    # Leading axes are identical across epochs, so row r is the same (trial, neuron, cond)
+    # slot in every epoch — one permutation indexes them all.
+    fit_flat = fit_trialX.reshape(-1, fit_trialX.shape[-1])
+    occ = ~np.all(np.isnan(fit_flat), axis=1)
+    proj_flat = {}
+    for pa in proj_aligns:
+        pf = proj_trialXs[pa].reshape(-1, proj_trialXs[pa].shape[-1])
+        proj_flat[pa] = pf
+        occ = occ | ~np.all(np.isnan(pf), axis=1)
+    occ_idx = np.where(occ)[0]
+    dst = occ_idx[rng.permutation(len(occ_idx))]   # occupied slots → permuted destinations
+
+    fit_s_flat = fit_flat.copy()
+    fit_s_flat[dst] = fit_flat[occ_idx]
+    fit_s = fit_s_flat.reshape(fit_trialX.shape)
+    proj_s = {}
+    for pa in proj_aligns:
+        ps = proj_flat[pa].copy()
+        ps[dst] = proj_flat[pa][occ_idx]
+        proj_s[pa] = ps.reshape(proj_trialXs[pa].shape)
+    return fit_s, proj_s
+
+
+def _nanmean_trials(trialX):
+    """Trial-average (axis 0) without allocating a full ~bool mask of trialX."""
+    nan_mask = np.isnan(trialX)
+    trialX_z = np.where(nan_mask, 0.0, trialX)
+    count = nan_mask.shape[0] - nan_mask.sum(axis=0)
+    X = trialX_z.sum(axis=0, dtype=np.float32) / np.maximum(count, 1).astype(np.float32)
+    X[count == 0] = np.nan
+    return X
+
+
+def _compute_cross_mean_score(dpca, fit_X, fit_trialX, proj_Xs, proj_trialXs,
+                              n_splits, keys, key_groups, cross_decode_keys, fit_align=None):
+    """Refit axes on the fit-epoch 80% ONCE per split, then decode every projection epoch
+    through those shared axes (centroids = proj 80%, test = held-out proj 20%).
+    ``proj_Xs`` / ``proj_trialXs`` are dicts keyed by proj-epoch name.
+    Output: scores[proj_align][proj_key][class_key] = (n_components, K_proj) mean over splits.
+
+    fit_align : when given, the diagonal-self cell (proj_align == fit_align and class_key ==
+                proj_key, e.g. choice decoded from the choice PC at the fit epoch) is skipped —
+                it is identical to the self-projection significance mask, so it is reused from
+                there instead of recomputed here."""
+    proj_aligns = list(proj_Xs.keys())
+    scores = {pa: {} for pa in proj_aligns}
+    for pa in proj_aligns:
+        K = proj_Xs[pa].shape[-1]
+        for pk in keys:
+            ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[pk]
+            scores[pa][pk] = {ck: np.empty((ncomps, n_splits, K))
+                              for ck in cross_decode_keys.get(pk, [pk])
+                              if not (pa == fit_align and ck == pk)}
+
+    for s in range(n_splits):
+        trainX_fit, trainX_projs, validX_projs = _dpca_paired_split_fraction(
+            fit_X, fit_trialX, proj_Xs, proj_trialXs, train_fraction=0.8
+        )
+        dpca.fit(trainX_fit)                       # ← single refit, shared across all proj epochs
+        for pa in proj_aligns:
+            K = proj_Xs[pa].shape[-1]
+            time_axis = proj_Xs[pa].ndim - 2
+            dpca, trainZ = dpca_transform(dpca, trainX_projs[pa])
+            dpca, validZ = dpca_transform(dpca, validX_projs[pa])
+            for pk in keys:
+                ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[pk]
+                for ck in scores[pa][pk]:          # skips the diagonal-self cell (see fit_align)
+                    axset = dpca.marginalizations[ck]
+                    axset = axset if isinstance(axset, set) else set.union(*axset)
+                    axes = set(range(proj_Xs[pa].ndim - 1)) - axset - {time_axis}
+                    tz, vz = trainZ[pk], validZ[pk]
+                    for ax in list(axes)[::-1]:
+                        tz = np.nanmean(tz, axis=ax + 1)
+                        vz = np.nanmean(vz, axis=ax + 1)
+                    try:
+                        tz = tz.reshape((ncomps, -1, K))
+                        vz = vz.reshape((ncomps, -1, K))
+                    except ValueError as e:
+                        raise ValueError(f"Reshape failed for ({pa}, {pk}, {ck}) with ncomps={ncomps}, K={K}: tz={tz.shape}, vz={vz.shape}") from e
+                    groups = (key_groups or {}).get(ck)
+                    for comp in range(ncomps):
+                        scores[pa][pk][ck][comp, s] = _classification(tz[comp], vz[comp], groups=groups)
+
+    for pa in proj_aligns:
+        for pk in keys:
+            for ck in scores[pa][pk]:
+                scores[pa][pk][ck] = np.nanmean(scores[pa][pk][ck], axis=1)
+    return scores
+
+
+def _cross_shuffle_worker(dpca, fit_trialX, proj_trialXs, n_splits, keys,
+                          key_groups, cross_decode_keys, seed_i, fit_align=None):
+    """Single null iteration: consistent paired label shuffle across fit + all proj epochs,
+    then a shared-refit cross score."""
+    import copy
+    dpca = copy.deepcopy(dpca)
+    rng = np.random.default_rng(seed_i)
+    fit_s, proj_s = _shuffle_labels_paired(fit_trialX, proj_trialXs, rng)
+    fit_X_s   = _nanmean_trials(fit_s)
+    # Re-clean the fit epoch after shuffling (mirrors the self-period worker, _shuffle_worker,
+    # and clean_dpca_data): a scrambled cell can leave a few fit-epoch timepoints with no
+    # covering trial → NaN average → would crash dpca.fit (pinv). Drop those timepoints before
+    # refitting; the axes are over neurons, so dropping a few of ~300 timepoints barely moves
+    # them. Entirely-empty cells are excluded so they don't wipe out every timepoint. Proj
+    # epochs keep their own (untrimmed) time axes — they never reach pinv.
+    missing_cond = np.all(np.isnan(fit_X_s), axis=(0, -1), keepdims=True)
+    keep_tp = ~np.any(np.isnan(fit_X_s) & ~missing_cond, axis=tuple(range(fit_X_s.ndim - 1)))
+    if not keep_tp.all():
+        fit_X_s = fit_X_s[..., keep_tp]
+        fit_s   = fit_s[..., keep_tp]
+    proj_Xs_s = {pa: _nanmean_trials(proj_s[pa]) for pa in proj_s}
+    return _compute_cross_mean_score(
+        dpca, fit_X_s, fit_s, proj_Xs_s, proj_s,
+        n_splits, keys, key_groups, cross_decode_keys, fit_align=fit_align,
+    )
+
+
+def dpca_cross_significance_analysis(
+    dpca, fit_X, fit_trialX, proj_Xs, proj_trialXs,
+    n_shuffles=100, n_splits=15, n_consecutive=1,
+    full=False, keys=None, n_jobs=-1,
+    key_groups=None, smooth_sigma=None,
+    cross_decode_keys=None, seed=0, fit_align=None,
+):
+    """Cross-period significance with a rigorous shared-trial split (no trial leakage),
+    refitting the dPCA axes ONCE per split and decoding every projection epoch through
+    those shared axes — ~Nproj× cheaper than refitting per (fit, proj) pair, and a closer
+    match to the real analysis (cross_period_projection fits one model and projects it to
+    all epochs).
+
+    Unlike ``dpca_significance_analysis(..., refit=False)`` — which freezes axes fit on
+    100% of the fit-epoch data and so lets the held-out test trials influence the axes
+    (the same physical trials appear in every epoch) — this refits the axes on a fresh 80%
+    of the fit-epoch trials each split and decodes the held-out 20% in each projection
+    epoch. The test trials touch neither the axis fit nor the classifier centroids, and
+    axis-estimation variability is propagated into the null.
+
+    Parameters
+    ----------
+    dpca              : dPCA model (refit each split; regularization optimized once)
+    fit_X, fit_trialX : trial-averaged / trial-wise data of the FIT epoch (axes source)
+    proj_Xs           : dict[proj_align → trial-averaged array] of projection epochs
+    proj_trialXs      : dict[proj_align → trial-wise array]; each must share fit_trialX's
+                        trial axis (row-for-row correspondence)
+    n_shuffles        : shuffles to build the null distribution
+    n_splits          : refit/decode splits per score estimate (refit already provides CV,
+                        so ~15 is plenty; far cheaper than the refit=False path's default 50)
+    cross_decode_keys : dict[proj_key → list[class_key]]. For each projection PC, classify
+                        the listed variables. E.g. {'b': ['b','c'], 'c': ['b','c']} tests
+                        state & choice separability in both the state-PC and choice-PC
+                        projections. Defaults to {k: [k]}.
+    key_groups, smooth_sigma, n_consecutive, full, keys, n_jobs : as in
+                        dpca_significance_analysis.
+    seed              : base RNG seed; shuffle i uses seed + i (reproducible null).
+
+    Returns
+    -------
+    masks      : dict[proj_align][proj_key][class_key] → (n_components, T_proj) bool
+    true_score : same structure, classifier accuracy on real data (smoothed if smooth_sigma)
+    scores     : same structure, list of per-shuffle null arrays
+    """
+    for pa, ptw in proj_trialXs.items():
+        if ptw.shape[0] != fit_trialX.shape[0]:
+            raise ValueError(
+                f"proj_trialXs['{pa}'] and fit_trialX must share the trial axis "
+                f"(got {ptw.shape[0]} vs {fit_trialX.shape[0]} rows). "
+                f"Cross-period significance needs row-for-row trial correspondence."
+            )
+
+    if dpca.opt_regularizer_flag:
+        print("Regularization not optimized yet; starting optimization now.")
+        dpca._optimize_regularization(fit_X, fit_trialX)
+
+    all_keys = list(dpca.marginalizations.keys())
+    time_key = dpca.labels[-1]
+    if keys is None:
+        keys = [k for k in all_keys if k != time_key]
+    if cross_decode_keys is None:
+        cross_decode_keys = {k: [k] for k in keys}
+
+    proj_aligns = list(proj_Xs.keys())
+    fit_X      = fit_X.astype(np.float32, copy=False)
+    fit_trialX = fit_trialX.astype(np.float32)
+    proj_Xs      = {pa: proj_Xs[pa].astype(np.float32, copy=False) for pa in proj_aligns}
+    proj_trialXs = {pa: proj_trialXs[pa].astype(np.float32) for pa in proj_aligns}
+
+    from joblib import Parallel, delayed
+    import copy as _copy
+    import os as _os
+
+    # Cap n_jobs to keep peak RAM in check. Each worker holds shuffled copies of the fit
+    # array plus every proj array, peaking at ~3× during shuffle/_nanmean/split copies.
+    try:
+        import psutil as _psutil
+        _mem_avail = _psutil.virtual_memory().available
+        _proj_bytes = sum(v.nbytes for v in proj_trialXs.values())
+        _mem_per_worker = 3 * (fit_trialX.nbytes + _proj_bytes)
+        _max_safe = max(1, int(_mem_avail * 0.5 / _mem_per_worker)) if _mem_per_worker > 0 else n_jobs
+        _n_cpu = _os.cpu_count() or 1
+        _requested = (_n_cpu + 1 + n_jobs) if n_jobs < 0 else n_jobs
+        _effective = min(_requested, _max_safe)
+        if _effective < _requested:
+            print(
+                f"  Capping n_jobs to {_effective} to avoid OOM "
+                f"(~{_mem_per_worker/1e9:.1f} GB/worker, {_mem_avail/1e9:.1f} GB free)",
+                flush=True,
+            )
+        n_jobs = _effective
+    except ImportError:
+        pass
+
+    print(f"Computing true cross score ({n_splits} refit/decode splits, "
+          f"{len(proj_aligns)} proj epochs)...", flush=True)
+    true_score = _compute_cross_mean_score(
+        _copy.deepcopy(dpca), fit_X, fit_trialX, proj_Xs, proj_trialXs,
+        n_splits, keys, key_groups, cross_decode_keys, fit_align=fit_align,
+    )
+    print("True score done.")
+
+    if smooth_sigma is not None:
+        for pa in proj_aligns:
+            for pk in keys:
+                for ck in true_score[pa][pk]:
+                    true_score[pa][pk][ck] = _smooth_score_array(true_score[pa][pk][ck], smooth_sigma)
+
+    print(f"Running {n_shuffles} shuffles ({n_jobs} parallel jobs)...", flush=True)
+    shuffle_results = Parallel(n_jobs=n_jobs, verbose=10, max_nbytes='1M')(
+        delayed(_cross_shuffle_worker)(
+            dpca, fit_trialX, proj_trialXs, n_splits, keys,
+            key_groups, cross_decode_keys, seed + i, fit_align,
+        )
+        for i in range(n_shuffles)
+    )
+    print("Shuffles done. Computing masks...")
+
+    masks  = {pa: {pk: {} for pk in keys} for pa in proj_aligns}
+    scores = {pa: {pk: {} for pk in keys} for pa in proj_aligns}
+    for pa in proj_aligns:
+        for pk in keys:
+            for ck in true_score[pa][pk]:
+                null = [r[pa][pk][ck] for r in shuffle_results]
+                if smooth_sigma is not None:
+                    null = [_smooth_score_array(s, smooth_sigma) for s in null]
+                scores[pa][pk][ck] = null
+                ts = true_score[pa][pk][ck]
+                m = np.full(ts.shape, False)
+                min_len = min(s.shape[1] for s in null)
+                quantile_score = np.nanquantile(
+                    np.dstack([s[:, :min_len] for s in null]), 0.95, axis=-1
+                )
+                m[:, :min_len] = ts[:, :min_len] >= quantile_score
+                if smooth_sigma is None and n_consecutive > 1:
+                    for k in range(m.shape[0]):
+                        m[k] = _denoise_mask(m[k].astype(np.int32), n_consecutive)
+                masks[pa][pk][ck] = m
+
+    if full:
+        return masks, true_score, scores
     return masks, true_score, scores
 
 
