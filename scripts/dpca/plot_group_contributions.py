@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np, pandas as pd, pickle
 
-ROOT = Path("D:/prior-ephys-dm/prior-encoding-in-nhp-sc"); sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parents[2]; sys.path.insert(0, str(ROOT))
 from config import dir_config, ephys_config
 from src.utils import dpca_utils
 
