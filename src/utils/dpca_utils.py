@@ -822,8 +822,7 @@ def _shuffle_worker(dpca, trialX, n_splits, keys, key_groups, refit=True):
     # Sparse conditions (e.g. error trials) can leave 0 valid timepoints after shuffling.
     # Return NaN scores so nanquantile skips this shuffle when building the null.
     if X_s.shape[-1] == 0:
-        ncomps = dpca.n_components if isinstance(dpca.n_components, int) else max(dpca.n_components.values())
-        return {key: np.full((ncomps, K_orig), np.nan) for key in keys}, None
+        return {key: np.full(((dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]), K_orig), np.nan) for key in keys}, None
 
     dpca, Z = dpca_transform(dpca, X_s)
     score = _compute_mean_score(dpca, X_s, trialX_trimmed, n_splits, keys, key_groups=key_groups, refit=refit)
