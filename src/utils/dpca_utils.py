@@ -776,8 +776,8 @@ def _compute_mean_score(dpca, X, trialX, n_splits, keys, key_groups=None, refit=
             try:
                 trainZ[key] = trainZ[key].reshape((ncomps, -1, K))
                 validZ[key] = validZ[key].reshape((ncomps, -1, K))
-            except ValueError:
-                print(f"Error occurred while reshaping for key: {key}")
+            except ValueError as e:
+                raise ValueError(f"Reshape failed for key={key!r} (ncomps={ncomps}, K={K}): trainZ={trainZ[key].shape}, validZ={validZ[key].shape}") from e
 
         for key in keys:
             ncomps = dpca.n_components if isinstance(dpca.n_components, int) else dpca.n_components[key]
