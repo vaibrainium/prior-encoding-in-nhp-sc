@@ -1129,9 +1129,8 @@ def _compute_cross_mean_score(dpca, fit_X, fit_trialX, proj_Xs, proj_trialXs,
                     try:
                         tz = tz.reshape((ncomps, -1, K))
                         vz = vz.reshape((ncomps, -1, K))
-                    except ValueError:
-                        print(f"Error reshaping for ({pa}, {pk}, {ck})")
-                        continue
+                    except ValueError as e:
+                        raise ValueError(f"Reshape failed for ({pa}, {pk}, {ck}) with ncomps={ncomps}, K={K}: tz={tz.shape}, vz={vz.shape}") from e
                     groups = (key_groups or {}).get(ck)
                     for comp in range(ncomps):
                         scores[pa][pk][ck][comp, s] = _classification(tz[comp], vz[comp], groups=groups)
