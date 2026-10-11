@@ -34,8 +34,8 @@ colors:
     L: "#F781BF"
     R: "#4DAF4A"
   block_colors:
-    equal: "#A65628"
-    unequal: "#984EA3"
+    equal: "#377eb8"
+    unequal: "#ff7f00"
   state_colors:
-    biased: "#1f77b4"
-    unbiased: "#ff7f0e"
+    unbiased: "#ff7f00"
+    biased: "#377eb8"
