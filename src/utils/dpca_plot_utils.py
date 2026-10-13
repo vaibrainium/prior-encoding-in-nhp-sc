@@ -7,7 +7,14 @@ plot_variance_explained   – cumulative variance explained per marginalization 
 plot_dpca_traces          – plot all condition traces for one PC onto an axes
 bar_significance          – draw a significance bar at the bottom of an axes
 plot_self_projection      – margs × alignments self-projection grid
+plot_self_projection_ci   – one figure per marg; condition means with SEM bands
 plot_cross_projection     – cross-period projection with highlighted self-projection panel
+plot_cross_projection_ci  – cross-period projection, 4 state × choice means with SEM bands
+
+Helpers shared with the notebook-local self-projection-CI figure
+----------------------------------------------------------------
+thick_line_sem            – analytic SEM of a condition-balanced marginal projection
+projection_sign_flip      – ±1 so a panel satisfies the requested condition ordering
 """
 
 import numpy as np
@@ -103,6 +110,57 @@ def bar_significance(ax, time, mask, y_offset=0.0, height=0.04, color="black"):
     )
 
 
+# ── Analytic SEM of a thick condition mean ────────────────────────────────────
+# cell axes of a trial-wise matrix after trial-averaging: 0=neuron 1=state(b) 2=coh(s)
+# 3=choice(c) 4=time.  For each marginalization, collapse the NON-key conditions with
+# equal weight per condition (matches dpca_utils.dpca_significance_analysis):
+MARG_COLLAPSE = {'s': (1, 3), 'c': (1, 2), 'b': (2, 3)}
+
+# cross-projection groups by state × choice, so only coherence is collapsed:
+CROSS_COLLAPSE = (2,)
+
+
+def thick_line_sem(trialX, w, collapse_axes):
+    """Analytic SEM of the condition-balanced marginal projection (the thick mean line).
+
+        thick(v,t) = sum_n w_n * Xbar_n(v,t),   w_n = D[marg][:, PC]
+        var(thick) = sum_n w_n^2 * (1/K^2) * sum_cells( s2_cell / n_cell )
+
+    trialX        : (n_trial, n_neuron, n_state, n_coh, n_choice, n_time)  = trial-wise matrix
+    w             : (n_neuron,) axis loading = dpca_results[align]['model'].D[marg][:, PC]
+    collapse_axes : non-key condition axes to average over (cell space, see MARG_COLLAPSE)
+    returns sem   : (*target_shape, n_time)   aligned with the thick-line order
+    """
+    cell_mean = np.nanmean(trialX, axis=0)                 # (neuron, b, s, c, time)
+    cell_var  = np.nanvar(trialX,  axis=0, ddof=1)         # per-cell trial variance
+    cell_cnt  = np.sum(~np.isnan(trialX), axis=0)          # per-cell trial count
+    with np.errstate(invalid='ignore', divide='ignore'):
+        cell_sem2 = cell_var / cell_cnt                    # SEM^2 of each cell mean
+    K = np.sum(~np.isnan(cell_mean), axis=collapse_axes, keepdims=True)  # #valid cells
+    with np.errstate(invalid='ignore', divide='ignore'):
+        var_Xbar = np.nansum(cell_sem2, axis=collapse_axes, keepdims=True) / K**2
+    var_Xbar = np.squeeze(var_Xbar, axis=collapse_axes)    # (neuron, *target, time)
+    var_thick = np.tensordot(w**2, var_Xbar, axes=([0], [0]))  # (*target, time)
+    return np.sqrt(var_thick)
+
+
+def projection_sign_flip(projections, alignment, marg, PC):
+    """Sign (±1) for this (alignment, marg, PC) so the epoch's OWN panel satisfies
+    toRF > awayRF (c), biased > unbiased (b), high coh > low coh (s). dPCA fits each
+    alignment's axes independently, so the sign is independently arbitrary per epoch."""
+    data_pc = projections[alignment][alignment][marg][PC]  # (n_states, n_coh, n_choices, n_time)
+    if marg == 's':
+        m = np.nanmean(data_pc, axis=(0, 2))          # (n_coh, time), 0=lowest..-1=highest coh
+        diff = np.nanmean(m[-1] - m[0])
+    elif marg == 'c':
+        m = np.nanmean(data_pc, axis=(0, 1))          # (n_choices, time), 0=awayRF,1=toRF
+        diff = np.nanmean(m[1] - m[0])
+    else:  # 'b'
+        m = np.nanmean(data_pc, axis=(1, 2))          # (n_states, time), 0=biased,1=unbiased
+        diff = np.nanmean(m[0] - m[1])
+    return -1.0 if diff < 0 else 1.0
+
+
 def plot_self_projection(projections, time_axes, alignments, margs_to_plot,
                          significance_masks=None, PC=0,
                          n_states=2, n_coh=4,
@@ -188,6 +246,107 @@ def plot_self_projection(projections, time_axes, alignments, margs_to_plot,
     return fig
 
 
+# Sequential purple ramp (light→dark = low→high coherence) for the CI self-projection,
+# instead of the greyscale _STIM_GREYS — greys were nearly indistinguishable once the
+# overlapping semi-transparent CI bands blended together. Purple stays visually distinct from
+# the blue/orange state palettes. 0% coh's shade must stay dark enough to be visible against
+# the white figure background — a near-white ramp start reads as a blank "white trace".
+STIM_CI_COLORS = ["#c4c2df", "#9e9ac8", "#6a51a3", "#3f007d"]
+
+
+def _plot_self_projection_ci_marg(ax_row, marg, alignments, projections, time_axes,
+                                  fit_tw, dpca_results, significance_masks, PC,
+                                  n_states, n_coh, coh_labels, biased_colors, unbiased_colors,
+                                  trace_alpha, z, show_thin):
+    """Draw one marg's row of subplots (one alignment per column) onto ax_row."""
+    n_cols = len(alignments)
+    for col, alignment in enumerate(alignments):
+        Z, time = projections[alignment][alignment], time_axes[alignment]
+        D_model, trialX = dpca_results[alignment]["model"].D, fit_tw[alignment]
+        ax = ax_row[col]
+        flip = projection_sign_flip(projections, alignment, marg, PC)
+        data_pc = flip * Z[marg][PC]                       # (n_states, n_coh, n_choices, n_time)
+        if show_thin:
+            plot_dpca_traces(ax, time, data_pc, n_states, n_coh,
+                             biased_colors, unbiased_colors, alpha=trace_alpha)
+        sem = thick_line_sem(trialX, D_model[marg][:, PC], MARG_COLLAPSE[marg])  # (target,time)
+
+        if marg == 's':
+            mean = np.nanmean(data_pc, axis=(0, 2))        # (n_coh, time)
+            colors, styles = [STIM_CI_COLORS[s] for s in range(n_coh)], ["-"] * n_coh
+            labels = [f"{coh_labels[s]} coh" for s in range(n_coh)]
+        elif marg == 'c':
+            mean = np.nanmean(data_pc, axis=(0, 1))        # (n_choices, time)  0=awayRF,1=toRF
+            colors, styles = ["black", "black"], ["--", "-"]
+            labels = ["awayRF choice", "toRF choice"]
+        else:  # 'b'
+            mean = np.nanmean(data_pc, axis=(1, 2))        # (n_states, time)
+            colors, styles = [biased_colors[-1], unbiased_colors[-1]], ["-"] * n_states
+            labels = ["biased state", "unbiased state"]
+        for k in range(mean.shape[0]):
+            ax.plot(time, mean[k], color=colors[k], linestyle=styles[k], linewidth=2.5,
+                    label=labels[k])
+            ax.fill_between(time, mean[k] - z * sem[k], mean[k] + z * sem[k],
+                            color=colors[k], alpha=0.22, linewidth=0)
+        if col == n_cols - 1:                          # one legend per row, outside the figure
+            ax.legend(fontsize=8, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
+
+        if significance_masks is not None and marg in significance_masks.get(alignment, {}):
+            bar_significance(ax, time, significance_masks[alignment][marg][PC])
+        if not show_thin:
+            ax.axvline(0, color="k", linestyle="--", linewidth=0.8)
+            ax.spines[["top", "right"]].set_visible(False)
+        ax.set_yticks([])
+        ax.set_title(ALIGN_LABELS.get(alignment, alignment), fontsize=13)
+        if col == 0:
+            ax.set_ylabel(f"{MARG_LABELS.get(marg, marg)} PC{PC + 1}", fontsize=12)
+        ax.set_xlabel("Time aligned to event (ms)", fontsize=11)
+
+
+def plot_self_projection_ci(projections, time_axes, alignments, margs_to_plot,
+                            fit_tw, dpca_results, significance_masks=None, PC=0,
+                            n_states=2, n_coh=4, coh_labels=None, title=None,
+                            trace_alpha=0.15, z=1.96, show_thin=True, show=False):
+    """plot_self_projection + a z*SEM shaded band on each thick condition mean, split into
+    ONE FIGURE PER MARG (returns {marg: fig}) instead of one combined figure — each figure
+    has alignments as columns.
+
+    The band is the analytic SEM of the condition-balanced marginal projection (the thick
+    line), propagated from per-cell trial statistics in fit_tw — the same trials the
+    significance test uses. Bands pulling apart = the condition means separate = encoding
+    onset for that variable.
+
+    Each (alignment, marg, PC) panel gets its OWN sign flip (see projection_sign_flip) so
+    toRF>awayRF, biased>unbiased, high coh>low coh in every panel — dPCA fits each alignment
+    independently, so a single sign aggregated across epochs can leave an individual epoch's
+    ordering backwards even when most epochs are correct.
+
+    show_thin : also draw the faint per-condition traces underneath the means.
+    show      : call plt.show() per figure (notebook use); off by default for scripts.
+    """
+    biased_colors, unbiased_colors = BIASED_COLORS[:n_coh], UNBIASED_COLORS[:n_coh]
+    if coh_labels is None:
+        coh_labels = [f"coh{i}" for i in range(n_coh)]
+    n_cols = len(alignments)
+
+    figs = {}
+    for marg in margs_to_plot:
+        fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 4), squeeze=False)
+        _plot_self_projection_ci_marg(
+            axes[0], marg, alignments, projections, time_axes, fit_tw, dpca_results,
+            significance_masks, PC, n_states, n_coh, coh_labels,
+            biased_colors, unbiased_colors, trace_alpha, z, show_thin,
+        )
+        marg_title = (f"{title} — {MARG_LABELS.get(marg, marg)}" if title
+                      else MARG_LABELS.get(marg, marg))
+        fig.suptitle(marg_title, y=1.05)
+        fig.tight_layout(rect=[0, 0, 0.88, 1])  # leave room on the right for the row legend
+        if show:
+            plt.show()
+        figs[marg] = fig
+    return figs
+
+
 def plot_cross_projection(projections, time_axes, alignments, margs_to_plot, fit_align,
                           PC=0, n_coh=4, coh_labels=None,
                           biased_colors=None, unbiased_colors=None,
@@ -258,6 +417,99 @@ def plot_cross_projection(projections, time_axes, alignments, margs_to_plot, fit
     fig.legend(handles=handles, bbox_to_anchor=(1.01, 0.9), loc="upper left", fontsize=10)
     fig.suptitle(
         f"Cross-period projection — fit on {ALIGN_LABELS.get(fit_align, fit_align)}"
+        "  (orange border = self-projection)",
+        fontsize=13, y=1.01,
+    )
+    plt.tight_layout()
+    return fig
+
+
+def plot_cross_projection_ci(projections, time_axes, alignments, margs_to_plot, fit_align,
+                             fit_tw, dpca_results, significance_masks=None, PC=0,
+                             n_coh=4, z=1.96, title=None, show_band=True):
+    """Cross-period projection showing ONLY the 4 state × choice means, each with a z*SEM band.
+
+    Differs from plot_cross_projection (which scripts/dpca/* still use) in three ways:
+      * no thin per-condition traces — just the 2 states × 2 choices, collapsed over coherence
+      * a z*SEM shaded band on each mean, from thick_line_sem on the PROJ epoch's trials with
+        the FIT epoch's loading w = D[marg][:, PC]. That product is exactly what the cross
+        projection computes, so the band is the analytic SEM of the line it wraps.
+      * ONE sign flip per (fit_align, marg, PC), decided on the fit epoch's own panel and
+        applied to every projected column. Flipping per column (as the self-projection figure
+        does) would hide the very thing a cross-projection asks: whether the other epochs
+        preserve the fit epoch's ordering.
+
+    State = color (biased/unbiased), choice = linestyle (toRF solid, awayRF dashed).
+    show_band         : draw the z*SEM bands. Set False for the 4 bare mean traces — the
+                        SEM is then not computed at all, so fit_tw may be omitted (None).
+    fit_tw            : dict[align] → trial-wise matrix, one entry per projected alignment
+    significance_masks: dict[proj_align][marg][class_key] → (n_components, n_time) bool,
+                        the cross_decode format (see dpca_utils.dpca_cross_significance_analysis)
+    """
+    biased_colors, unbiased_colors = BIASED_COLORS[:n_coh], UNBIASED_COLORS[:n_coh]
+    state_colors  = [biased_colors[-1], unbiased_colors[-1]]   # 0=biased, 1=unbiased
+    state_labels  = ["biased", "unbiased"]
+    choice_styles = ["--", "-"]                                # c=0 awayRF, c=1 toRF
+    choice_labels = ["awayRF", "toRF"]
+
+    n_rows, n_cols = len(margs_to_plot), len(alignments)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
+
+    for row, marg in enumerate(margs_to_plot):
+        flip = projection_sign_flip(projections, fit_align, marg, PC)  # fit epoch decides once
+        w = dpca_results[fit_align]["model"].D[marg][:, PC]
+        for col, proj_align in enumerate(alignments):
+            ax, time = axes[row, col], time_axes[proj_align]
+            data_pc = flip * projections[fit_align][proj_align][marg][PC]  # (b, s, c, t)
+            mean = np.nanmean(data_pc, axis=1)                             # (b, c, t)
+            sem = thick_line_sem(fit_tw[proj_align], w, CROSS_COLLAPSE) if show_band else None
+            for b in range(mean.shape[0]):
+                for c in range(mean.shape[1]):
+                    ax.plot(time, mean[b, c], color=state_colors[b],
+                            linestyle=choice_styles[c], linewidth=2.5)
+                    if show_band:
+                        ax.fill_between(time,
+                                        mean[b, c] - z * sem[b, c], mean[b, c] + z * sem[b, c],
+                                        color=state_colors[b], alpha=0.2, linewidth=0)
+
+            if significance_masks is not None:
+                panel_masks = significance_masks.get(proj_align, {}).get(marg, {})
+                # bars hug the bottom edge (tight, low offsets) so they don't cover the bands
+                for y_off, ck in zip([0.025, 0.0], ["b", "c"]):
+                    if ck in panel_masks:
+                        bar_significance(ax, time, panel_masks[ck][PC],
+                                         y_offset=y_off, height=0.025,
+                                         color=SIG_COLORS.get(ck, "black"))
+            # open empty space below the traces for the sig bars (axes-fraction 0–0.05)
+            ymin, ymax = ax.get_ylim()
+            ax.set_ylim(ymin - 0.12 * (ymax - ymin), ymax)
+            ax.axvline(0, color="k", linestyle="--", linewidth=0.8)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.set_yticks([])
+            if row == 0:
+                ax.set_title(ALIGN_LABELS.get(proj_align, proj_align), fontsize=12)
+            if col == 0:
+                ax.set_ylabel(f"{MARG_LABELS.get(marg, marg)} PC{PC + 1}", fontsize=12)
+            if row == n_rows - 1:
+                ax.set_xlabel("Time aligned to event (ms)", fontsize=11)
+            if proj_align == fit_align:
+                for spine in ax.spines.values():
+                    spine.set_edgecolor("#e05c00")
+                    spine.set_linewidth(2)
+
+    handles = [
+        plt.Line2D([], [], color=state_colors[b], linestyle=choice_styles[c], linewidth=2.5,
+                   label=f"{state_labels[b]} / {choice_labels[c]}")
+        for b in range(2) for c in range(2)
+    ] + [
+        plt.Rectangle((0, 0), 1, 0.04, fc=SIG_COLORS["b"], label="GLM state sig"),
+        plt.Rectangle((0, 0), 1, 0.04, fc=SIG_COLORS["c"], label="choice sig"),
+    ]
+    fig.legend(handles=handles, bbox_to_anchor=(1.01, 0.9), loc="upper left", fontsize=10)
+    default_title = "Cross-period projection ± SEM" if show_band else "Cross-period projection"
+    fig.suptitle(
+        f"{title or default_title}"
+        f" — fit on {ALIGN_LABELS.get(fit_align, fit_align)}"
         "  (orange border = self-projection)",
         fontsize=13, y=1.01,
     )

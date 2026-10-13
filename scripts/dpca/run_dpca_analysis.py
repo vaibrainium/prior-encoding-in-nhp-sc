@@ -6,17 +6,25 @@ Usage:
 
 Outputs (under dissemination/dpca/):
     dpca_{group}_session_all_neuron/
-        self_projection.png
-        cross_projection_baseline.png
-        cross_projection_response.png
+        variance_explained.png
+        self_projection.png                  (plain style: all condition traces)
+        cross_projection_ci_{baseline,response,visual}.png
+                                             (CI style: 4 state x choice means + SEM bands)
     dpca_{group}_cell_type_leaveout/{tag}/
-        self_projection.png
+        self_projection_ci_{s,c,b}.png       (CI style: one figure per marginalization)
 
 Significance masks are cached as .pkl in processed_dir/dpca/ and reused if present.
+Figures are NOT cached — every run rewrites them. Use --only / --group to skip analyses
+whose figures are already current; each analysis costs a dPCA refit.
+
+    --only all-neuron | cell-type     default: both
+    --group toRF | awayRF             default: both
 """
 
+import argparse
 import copy
 import pickle
+import shutil
 import sys
 from pathlib import Path
 
@@ -195,14 +203,17 @@ def run_all_neuron(sessions, group_tag, neuron_metadata, state_trial_info,
 
     for fit_align in ["baseline", "response"]:
         _log(f"plotting cross-projection ({fit_align}) ...", indent=1)
-        fig = dpca_plot_utils.plot_cross_projection(
+        # Only the 4 state x choice means (coherence collapsed). One sign flip taken from
+        # the fit epoch and applied to every projected column — see plot_cross_projection_ci.
+        # show_band=False → bare mean traces; flip to True for the z*SEM bands.
+        fig = dpca_plot_utils.plot_cross_projection_ci(
             proj, ta, ALIGNMENTS, ["b", "c"], fit_align,
-            coh_labels=COH_LABELS,
-            significance_masks=cross_sig[fit_align],
+            ftw, results,
+            significance_masks=cross_sig[fit_align], z=1.96, show_band=False,
         )
-        fig.savefig(out_dir / f"cross_projection_{fit_align}.png", dpi=150, bbox_inches="tight")
+        fig.savefig(out_dir / f"cross_projection_ci_{fit_align}.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
-        _log(f"saved cross_projection_{fit_align}.png", indent=1)
+        _log(f"saved cross_projection_ci_{fit_align}.png", indent=1)
 
     # Visual fit → project on cue & response (separate cache so it doesn't recompute the
     # baseline/response cross sig above). The visual self column reuses the self-proj mask.
@@ -216,14 +227,14 @@ def run_all_neuron(sessions, group_tag, neuron_metadata, state_trial_info,
         cross_sig_visual["visual"]["visual"][k][k] = sig["visual"][k]
 
     _log("plotting cross-projection (visual) ...", indent=1)
-    fig = dpca_plot_utils.plot_cross_projection(
+    fig = dpca_plot_utils.plot_cross_projection_ci(
         proj, ta, visual_proj, ["b", "c"], "visual",
-        coh_labels=COH_LABELS,
-        significance_masks=cross_sig_visual["visual"],
+        ftw, results,
+        significance_masks=cross_sig_visual["visual"], z=1.96, show_band=False,
     )
-    fig.savefig(out_dir / "cross_projection_visual.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_dir / "cross_projection_ci_visual.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    _log("saved cross_projection_visual.png", indent=1)
+    _log("saved cross_projection_ci_visual.png", indent=1)
 
 
 def run_cell_type_leaveout(sessions, group_tag, neuron_metadata, state_trial_info,
@@ -248,20 +259,104 @@ def run_cell_type_leaveout(sessions, group_tag, neuron_metadata, state_trial_inf
             f"{group_tag} {tag} self sig",
         )
 
+        # CI style: condition means only (show_thin=False) with a 95% SEM band, one figure
+        # per marginalization. The thin per-condition traces are dropped here because the
+        # overlapping bands are unreadable underneath them.
         _log("plotting self-projection ...", indent=2)
-        fig = dpca_plot_utils.plot_self_projection(
+        figs = dpca_plot_utils.plot_self_projection_ci(
             proj, ta, ALIGNMENTS, ["s", "c", "b"],
+            ftw, results,
             significance_masks=sig, PC=0, coh_labels=COH_LABELS,
-            title=f"Self-projection — {group_tag} exclude {exclude_types}",
+            title=f"Self-projection ± SEM — {group_tag} exclude {exclude_types}",
+            z=1.96, show_thin=False,
         )
-        fig.savefig(out_dir / "self_projection.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        _log(f"saved self_projection.png", indent=2)
+        for marg, fig in figs.items():
+            fig.savefig(out_dir / f"self_projection_ci_{marg}.png", dpi=150, bbox_inches="tight")
+            plt.close(fig)
+        _log(f"saved self_projection_ci_{{{','.join(figs)}}}.png", indent=2)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main():
+CACHE_DIR = Path.home() / ".cache" / "sc-priors"
+
+
+def _cached_path(src, use_cache=True):
+    """Return a local copy of `src`, copying it from the network share if needed.
+
+    `processed_dir` lives on a network share that reads at roughly 1 MB/s, so the ~3.3 GB
+    ephys pickle costs ~45 min per run. The copy is refreshed whenever the source's mtime
+    or size differs, so an updated source is picked up automatically rather than silently
+    serving a stale cache.
+    """
+    if not use_cache:
+        return src
+    src = Path(src)
+    try:
+        st = src.stat()
+    except OSError as e:                       # share unmounted/unreachable
+        dst = CACHE_DIR / src.name
+        if dst.exists():
+            _log(f"[cache] source unreachable ({e.strerror}); using local {dst}", indent=1)
+            return dst
+        raise
+
+    dst = CACHE_DIR / src.name
+    if dst.exists():
+        d = dst.stat()
+        # mtime can drift by a second across filesystems; size is the stronger check
+        if d.st_size == st.st_size and abs(d.st_mtime - st.st_mtime) < 2:
+            _log(f"[cache] hit  {dst}  ({st.st_size / 1e9:.2f} GB)", indent=1)
+            return dst
+        _log(f"[cache] stale (source changed) — refreshing {dst.name}", indent=1)
+    else:
+        _log(f"[cache] miss — copying {src.name} ({st.st_size / 1e9:.2f} GB) to {CACHE_DIR}",
+             indent=1)
+        _log("        one-time cost; later runs read it locally", indent=1)
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".partial")
+    try:
+        shutil.copy2(src, tmp)                 # copy2 preserves mtime, so the check above works
+        tmp.replace(dst)                       # atomic: a killed copy never leaves a valid-looking cache
+    finally:
+        tmp.unlink(missing_ok=True)
+    _log(f"[cache] stored {dst}", indent=1)
+    return dst
+
+
+def _parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        description="dPCA analysis: all-neuron and cell-type leave-out figures.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Figures are always rewritten (no existence check) — only the significance\n"
+            "masks are cached. Use --only/--group to avoid redoing analyses whose figures\n"
+            "are already current, since each analysis costs a dPCA refit.\n\n"
+            "Examples:\n"
+            "  --only all-neuron              2 refits; self- and cross-projection figures\n"
+            "  --only cell-type --group toRF  6 refits; toRF cell-type figures only\n"
+        ),
+    )
+    p.add_argument(
+        "--only", choices=["all-neuron", "cell-type"], default=None,
+        help="run just one analysis (default: both)",
+    )
+    p.add_argument(
+        "--group", choices=["toRF", "awayRF"], default=None,
+        help="run just one session group (default: both)",
+    )
+    p.add_argument(
+        "--no-cache", action="store_true",
+        help=f"read the ephys pickle straight from the share instead of {CACHE_DIR}",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
     _log("Starting dPCA analysis script")
+    _log(f"only  : {args.only or 'all-neuron + cell-type'}")
+    _log(f"group : {args.group or 'toRF + awayRF'}")
 
     processed_dir = Path(dir_config.data.processed)
     compiled_dir  = Path(dir_config.data.compiled)
@@ -290,7 +385,9 @@ def main():
     glm_hmm_original = copy.deepcopy(glm_hmm)
 
     _log("loading ephys data ...")
-    with open(processed_dir / "ephys_neuron_wise.pkl", "rb") as f:
+    ephys_path = _cached_path(processed_dir / "ephys_neuron_wise.pkl",
+                              use_cache=not args.no_cache)
+    with open(ephys_path, "rb") as f:
         ephys = pickle.load(f)
 
     _log("extracting HMM state trial info ...")
@@ -305,15 +402,21 @@ def main():
     awayRF_sessions = session_metadata.session_id[session_metadata.prior_direction == "awayRF"]
     _log(f"toRF sessions: {len(toRF_sessions)},  awayRF sessions: {len(awayRF_sessions)}")
 
-    for group_tag, sessions in [("toRF", toRF_sessions), ("awayRF", awayRF_sessions)]:
-        run_all_neuron(
-            sessions, group_tag, neuron_metadata, state_trial_info,
-            ephys, compiled_dir, dpca_dir, out_base,
-        )
-        run_cell_type_leaveout(
-            sessions, group_tag, neuron_metadata, state_trial_info,
-            ephys, compiled_dir, dpca_dir, out_base,
-        )
+    groups = [("toRF", toRF_sessions), ("awayRF", awayRF_sessions)]
+    if args.group:
+        groups = [g for g in groups if g[0] == args.group]
+
+    for group_tag, sessions in groups:
+        if args.only in (None, "all-neuron"):
+            run_all_neuron(
+                sessions, group_tag, neuron_metadata, state_trial_info,
+                ephys, compiled_dir, dpca_dir, out_base,
+            )
+        if args.only in (None, "cell-type"):
+            run_cell_type_leaveout(
+                sessions, group_tag, neuron_metadata, state_trial_info,
+                ephys, compiled_dir, dpca_dir, out_base,
+            )
 
     _log("All analyses complete.")
 
